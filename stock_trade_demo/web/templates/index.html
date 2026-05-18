@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化策略可视化</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6fa;
+    --card-bg: #fff;
+    --text: #2d3436;
+    --text-secondary: #636e72;
+    --border: #e0e0e0;
+    --accent: #0984e3;
+    --green: #00b894;
+    --red: #d63031;
+    --orange: #e17055;
+    --purple: #6c5ce7;
+    --shadow: 0 2px 12px rgba(0,0,0,0.06);
+    --radius: 12px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Heiti SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+  }
+
+  .app { max-width: 1500px; margin: 0 auto; padding: 20px; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 24px; flex-wrap: wrap; gap: 16px;
+  }
+  .header h1 { font-size: 24px; font-weight: 700; }
+  .header .subtitle { font-size: 13px; color: var(--text-secondary); }
+
+  .controls-bar {
+    display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+    background: var(--card-bg); border-radius: var(--radius);
+    padding: 16px 20px; margin-bottom: 20px; box-shadow: var(--shadow);
+  }
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label {
+    font-size: 12px; font-weight: 600; color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .control-group select, .control-group input {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 14px; background: var(--bg); color: var(--text);
+    min-width: 140px; cursor: pointer;
+  }
+  .btn {
+    padding: 8px 20px; border: none; border-radius: 8px;
+    font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #0773c5; }
+  .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: #e8e8e8; }
+  .btn-orange { background: var(--orange); color: #fff; }
+  .btn-orange:hover { background: #d05a3f; }
+
+  /* Split sections */
+  .section-card {
+    background: var(--card-bg); border-radius: var(--radius);
+    padding: 20px; box-shadow: var(--shadow); margin-bottom: 20px;
+  }
+  .section-card .section-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--border);
+  }
+  .section-card .section-title {
+    font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 10px;
+  }
+  .section-badge {
+    font-size: 11px; padding: 3px 10px; border-radius: 10px;
+    font-weight: 600; color: #fff;
+  }
+  .badge-train { background: var(--accent); }
+  .badge-test { background: var(--orange); }
+
+  .metrics-row {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px; margin-bottom: 16px;
+  }
+  .metric-mini {
+    background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  }
+  .metric-mini .label { font-size: 11px; color: var(--text-secondary); }
+  .metric-mini .value { font-size: 20px; font-weight: 700; }
+  .metric-mini .sub { font-size: 10px; color: var(--text-secondary); }
+
+  .chart-box { width: 100%; height: 400px; }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); display: flex; align-items: center;
+    justify-content: center; z-index: 200;
+  }
+  .modal-content {
+    background: #fff; border-radius: var(--radius); padding: 24px 28px;
+    max-width: 960px; width: 95%; max-height: 85vh; overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  }
+  .modal-content h3 {
+    font-size: 18px; margin-bottom: 16px; padding-bottom: 12px;
+    border-bottom: 2px solid var(--border);
+  }
+  .modal-close {
+    float: right; background: none; border: none; font-size: 22px;
+    cursor: pointer; color: var(--text-secondary); line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+
+  .holding-period {
+    background: var(--bg); border-radius: 10px; padding: 14px 18px;
+    margin-bottom: 14px; border-left: 4px solid var(--orange);
+  }
+  .holding-period .period-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 10px;
+  }
+  .holding-period .period-date {
+    font-weight: 700; font-size: 15px;
+  }
+  .holding-period .period-return { font-weight: 700; }
+  .holding-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .holding-table th {
+    background: #dfe6e9; padding: 6px 10px; text-align: left;
+    font-weight: 600; font-size: 12px;
+  }
+  .holding-table td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+  }
+
+  .return-positive { color: var(--green); font-weight: 600; }
+  .return-negative { color: var(--red); font-weight: 600; }
+
+  .hidden { display: none !important; }
+  .loading-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,0.7); display: flex;
+    align-items: center; justify-content: center; z-index: 100;
+  }
+  .loading-spinner {
+    width: 48px; height: 48px; border: 4px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-banner {
+    background: #ffeaa7; border: 1px solid #fdcb6e;
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+    font-size: 14px; color: #d68910;
+  }
+
+  /* Factor Panel */
+  .factor-panel {
+    background: var(--card-bg); border-radius: var(--radius);
+    padding: 20px; box-shadow: var(--shadow); margin-bottom: 20px;
+  }
+  .factor-panel .panel-title {
+    font-size: 14px; font-weight: 600; margin-bottom: 12px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .factor-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .factor-item {
+    background: var(--bg); border-radius: 10px; padding: 16px;
+  }
+  .factor-item .factor-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .factor-item .factor-name { font-weight: 600; font-size: 14px; }
+  .factor-item .factor-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+  .factor-item .slider-row { display: flex; align-items: center; gap: 12px; }
+  .factor-item input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .factor-item .slider-value {
+    font-weight: 700; font-size: 14px; min-width: 50px;
+    text-align: right; color: var(--accent);
+  }
+  .factor-type {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+  }
+  .factor-type.filter { background: #dfe6e9; color: #636e72; }
+  .factor-type.weight { background: #ffeaa7; color: #d68910; }
+  .factor-type.trading { background: #d6f5f0; color: #00897b; }
+
+  .ranking-box {
+    background: linear-gradient(135deg, #a29bfe, #6c5ce7);
+    color: #fff; border-radius: 10px; padding: 16px;
+  }
+  .ranking-box .factor-name { font-weight: 600; font-size: 14px; }
+  .ranking-box .factor-desc { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+  .factor-subsection {
+    background: var(--bg); border-radius: 10px; padding: 16px;
+  }
+  .factor-subsection h4 {
+    font-size: 13px; margin-bottom: 10px;
+  }
+  .factor-list {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .factor-list-item {
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .factor-list-item .title {
+    font-size: 13px; font-weight: 600; margin-bottom: 4px;
+  }
+  .factor-list-item .meta {
+    font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;
+  }
+  .factor-list-item .desc {
+    font-size: 12px; color: var(--text-secondary);
+  }
+
+  @media (max-width: 900px) {
+    .metrics-row { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="header">
+    <div>
+      <h1>量化选股策略 · 可视化分析 <span style="background:#00b894;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;">v2 · 训练/测试集</span></h1>
+      <p class="subtitle" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span>行业估值分位 + bias反转 + 小市值 | 训练集: ≤2026-02-28 | 测试集: >2026-02-28</span>
+        <span id="data-date-badge" style="background:#6c5ce7;color:#fff;font-size:12px;padding:3px 10px;border-radius:12px;font-weight:600;white-space:nowrap;">数据更新至: ---</span>
+      </p>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-secondary" onclick="resetAll()">重置参数</button>
+      <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
+    </div>
+  </div>
+
+  <div class="controls-bar">
+    <div class="control-group">
+      <label>策略</label>
+      <select id="strategy-select" onchange="onStrategyChange()">
+        <option value="original">原版策略 (5223x)</option>
+        <option value="chan_enhanced">缠论增强 v1.1 (5131x)</option>
+        <option value="chan_only">纯缠论 v1.2 (16x)</option>
+        <option value="method_a">Method A v2.0 (5223x)</option>
+        <option value="quality_value">质量价值小盘 v3.0</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>起始日期（可选）</label>
+      <input type="date" id="start-date" placeholder="默认最早">
+    </div>
+    <div class="control-group">
+      <label>结束日期（可选）</label>
+      <input type="date" id="end-date" placeholder="默认最晚">
+    </div>
+    <div class="control-group" style="gap:6px;">
+      <label>快速周期</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="quickPeriod('month')" style="padding:6px 12px;font-size:12px;">近一月</button>
+        <button class="btn btn-secondary" onclick="quickPeriod('quarter')" style="padding:6px 12px;font-size:12px;">近一季</button>
+        <button class="btn btn-secondary" onclick="quickPeriod('half')" style="padding:6px 12px;font-size:12px;">近半年</button>
+        <button class="btn btn-secondary" onclick="quickPeriod('year')" style="padding:6px 12px;font-size:12px;">近一年</button>
+        <button class="btn btn-secondary" onclick="quickPeriod('3year')" style="padding:6px 12px;font-size:12px;">近三年</button>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
+  </div>
+
+  <div id="error-banner" class="error-banner hidden"></div>
+  <div id="loading" class="loading-overlay hidden"><div class="loading-spinner"></div></div>
+
+  <!-- ============ Overview (custom date range, no split) ============ -->
+  <div class="section-card hidden" id="overview-section">
+    <div class="section-header">
+      <div class="section-title">
+        回测结果 <span class="section-badge" style="background:var(--accent);">自定义区间</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span style="font-size:13px;color:var(--text-secondary);" id="overview-date-range"></span>
+        <span id="overview-zoom-btns"></span>
+        <button class="btn btn-orange" id="btn-overview-holdings" onclick="showHoldings()">查看持股明细 & 仓位</button>
+      </div>
+    </div>
+    <div class="metrics-row" id="overview-metrics"></div>
+    <div class="chart-box" id="chart-overview"></div>
+  </div>
+
+  <!-- ============ Training Set ============ -->
+  <div class="section-card" id="train-section">
+    <div class="section-header">
+      <div class="section-title">
+        训练集 <span class="section-badge badge-train">≤ 2026-02-28</span>
+      </div>
+      <span style="font-size:13px;color:var(--text-secondary);" id="train-date-range"></span>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><span id="train-zoom-btns"></span></div>
+    <div class="metrics-row" id="train-metrics"></div>
+    <div class="chart-box" id="chart-train"></div>
+  </div>
+
+  <!-- ============ Test Set ============ -->
+  <div class="section-card" id="test-section">
+    <div class="section-header">
+      <div class="section-title">
+        测试集 <span class="section-badge badge-test">> 2026-02-28</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span style="font-size:13px;color:var(--text-secondary);" id="test-date-range"></span>
+        <span id="test-zoom-btns"></span>
+        <button class="btn btn-orange" id="btn-holdings" onclick="showHoldings()">查看持股明细 & 仓位</button>
+      </div>
+    </div>
+    <div class="metrics-row" id="test-metrics"></div>
+    <div class="chart-box" id="chart-test"></div>
+  </div>
+
+  <!-- ============ Factor Panel ============ -->
+  <div class="factor-panel" id="factor-panel">
+    <div class="panel-title">因子参数 & 权重配置</div>
+    <div class="factor-grid" id="factor-grid"></div>
+  </div>
+</div>
+
+<!-- ============ Holdings Modal ============ -->
+<div class="modal-overlay hidden" id="holdings-modal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeHoldings()">×</button>
+    <h3>测试集 · 持股明细 & 仓位</h3>
+    <div id="holdings-content"></div>
+  </div>
+</div>
+
+<script>
+const charts = {};
+let backtestData = null;
+let factorConfig = null;
+let dataInfo = null;  // { data_min_date, data_max_date }
+
+function applyChartOption(chartId, option) {
+  const chart = charts[chartId];
+  if (!chart) return;
+  requestAnimationFrame(() => {
+    chart.resize();
+    chart.setOption(option, true);
+    chart.resize();
+  });
+}
+
+async function fetchDataInfo() {
+  try {
+    const resp = await fetch('/api/info');
+    dataInfo = await resp.json();
+    const badge = document.getElementById('data-date-badge');
+    if (badge && dataInfo.data_max_date) {
+      badge.textContent = '数据更新至: ' + dataInfo.data_max_date;
+    }
+    // Set date input max to data max date
+    const endInput = document.getElementById('end-date');
+    if (endInput && dataInfo.data_max_date) {
+      endInput.max = dataInfo.data_max_date;
+    }
+    const startInput = document.getElementById('start-date');
+    if (startInput && dataInfo.data_max_date) {
+      startInput.max = dataInfo.data_max_date;
+    }
+  } catch(e) { console.error('fetchDataInfo:', e); }
+}
+
+function init() {
+  ['chart-overview', 'chart-train', 'chart-test'].forEach(id => {
+    const dom = document.getElementById(id);
+    if (dom) charts[id] = echarts.init(dom);
+  });
+  window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+  fetchDataInfo();
+  onStrategyChange().then(() => runBacktest());
+}
+
+async function onStrategyChange() {
+  const strategy = document.getElementById('strategy-select').value;
+  try {
+    const resp = await fetch(`/api/factors?strategy=${strategy}`);
+    factorConfig = await resp.json();
+    renderFactorPanel();
+  } catch(e) { console.error(e); }
+}
+
+function quickPeriod(period) {
+  if (!dataInfo || !dataInfo.data_max_date) return;
+  const end = new Date(dataInfo.data_max_date);
+  let start = new Date(end);
+  switch (period) {
+    case 'month':    start.setMonth(start.getMonth() - 1); break;
+    case 'quarter':  start.setMonth(start.getMonth() - 3); break;
+    case 'half':     start.setMonth(start.getMonth() - 6); break;
+    case 'year':     start.setFullYear(start.getFullYear() - 1); break;
+    case '3year':    start.setFullYear(start.getFullYear() - 3); break;
+    default: return;
+  }
+  const fmt = d => d.toISOString().slice(0, 10);
+  document.getElementById('start-date').value = fmt(start);
+  document.getElementById('end-date').value = fmt(end);
+  runBacktest();
+}
+
+async function runBacktest() {
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('error-banner').classList.add('hidden');
+
+  const strategy = document.getElementById('strategy-select').value;
+  const startDate = document.getElementById('start-date').value;
+  const endDate = document.getElementById('end-date').value;
+
+  let params = `strategy=${strategy}`;
+  if (startDate) params += `&start=${startDate}`;
+  if (endDate) params += `&end=${endDate}`;
+  document.querySelectorAll('.factor-slider').forEach(s => {
+    params += `&${s.dataset.key}=${s.value}`;
+  });
+
+  try {
+    const resp = await fetch(`/api/backtest?${params}`);
+    if (!resp.ok) { const err = await resp.json(); throw new Error(err.error); }
+    backtestData = await resp.json();
+    renderAll();
+  } catch(e) {
+    document.getElementById('error-banner').textContent = `回测失败: ${e.message}`;
+    document.getElementById('error-banner').classList.remove('hidden');
+  } finally {
+    document.getElementById('loading').classList.add('hidden');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Smart x-axis: time axis with adaptive label format
+// ═══════════════════════════════════════════════════════════════
+function smartAxis(dates) {
+  if (!dates || dates.length === 0) return { type: 'time' };
+  const first = new Date(dates[0]);
+  const last = new Date(dates[dates.length - 1]);
+  const spanDays = (last - first) / 86400000;
+  // Label density by time span + max ~8 ticks
+  let fmt, minInterval;
+  if (spanDays <= 90) {
+    fmt = 'MM-dd';
+    minInterval = 7 * 86400000;      // weekly
+  } else if (spanDays <= 730) {
+    fmt = 'yyyy-MM';
+    minInterval = 30 * 86400000;     // monthly
+  } else {
+    fmt = 'yyyy';
+    minInterval = 365 * 86400000;    // yearly
+  }
+  return {
+    type: 'time',
+    minInterval: minInterval,
+    splitNumber: 8,
+    axisLabel: { formatter: fmt },
+  };
+}
+
+// time-axis data pairs: params.value = [dateStr, yValue].
+// Use encode so tooltip shows yValue directly, and a helper when needed.
+function _y(p) { return Array.isArray(p.value) ? p.value[1] : p.value; }
+
+// Resample monthly equity curve to quarterly/yearly
+function resampleCurve(curve, resolution) {
+  if (resolution === 'month' || !curve || curve.length === 0) return curve;
+  const groups = {};
+  curve.forEach(d => {
+    const dt = new Date(d.date);
+    let key;
+    if (resolution === 'quarter') {
+      key = dt.getFullYear() + '-Q' + (Math.floor(dt.getMonth() / 3) + 1);
+    } else {
+      key = String(dt.getFullYear());
+    }
+    if (!groups[key]) groups[key] = { returns: [], lastDate: d.date };
+    groups[key].returns.push(d.return);
+    groups[key].lastDate = d.date;
+  });
+  let cum = 1;
+  return Object.values(groups).map(g => {
+    const periodRet = g.returns.reduce((acc, r) => acc * (1 + r), 1) - 1;
+    cum *= (1 + periodRet);
+    return { date: g.lastDate, value: parseFloat(cum.toFixed(4)), return: parseFloat(periodRet.toFixed(6)) };
+  });
+}
+
+// dataZoom defaults: if >24 points, start zoomed to show ~24 most-recent points
+function zoomDefault(n) {
+  if (n <= 24) return { start: 0, end: 100 };
+  const show = 24;
+  return { start: Math.round((1 - show / n) * 100), end: 100 };
+}
+
+// Resolution presets (months)
+function applyZoom(chartId, months, totalMonths) {
+  const chart = charts[chartId];
+  if (!chart) return;
+  if (months <= 0 || months >= totalMonths) {
+    chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+    return;
+  }
+  const end = 100;
+  const start = Math.round((1 - months / totalMonths) * 100);
+  chart.dispatchAction({ type: 'dataZoom', start: start, end: end });
+}
+
+// Track current resolution per chart
+const chartResolution = {};
+
+function buildEquityChart(containerId, curve, bmCurve, yOpts) {
+  const chart = charts[containerId];
+  if (!chart || curve.length === 0) return;
+  const res = chartResolution[containerId] || 'month';
+  const c = resampleCurve(curve, res);
+  const bm = resampleCurve(bmCurve || [], res);
+  const dates = c.map(d => d.date);
+
+  let fmt;
+  if (res === 'year') fmt = v => v.slice(0, 4);
+  else if (res === 'quarter') fmt = v => v.slice(0, 7);
+  else fmt = v => v.slice(0, 7);
+
+  const series = [{
+    name: '策略', type: 'line', data: c.map(d => d.value),
+    smooth: false, lineStyle: { color: '#0984e3', width: 2 },
+    areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1, [
+      { offset: 0, color: 'rgba(9,132,227,0.2)' }, { offset: 1, color: 'rgba(9,132,227,0.02)' },
+    ])},
+    markLine: { silent: true, data: [{ yAxis: 1 }], lineStyle: { color: '#b2bec3', type: 'dashed' } },
+  }];
+  if (bm.length > 0) {
+    series.push({
+      name: 'CSI 1000', type: 'line', data: bm.map(d => d.value),
+      smooth: false, lineStyle: { color: '#b2bec3', width: 1.5, type: 'dashed' },
+    });
+  }
+
+  const yo = yOpts || {};
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      formatter: pts => {
+        if (!pts || pts.length === 0) return '';
+        let html = `${pts[0].axisValue}`;
+        pts.forEach(p => {
+          html += `<br/>${p.seriesName}: <b>${p.value.toFixed(4)}</b>`;
+        });
+        if (pts.length >= 2) {
+          const excess = (pts[0].value / pts[1].value - 1) * 100;
+          html += `<br/>跑赢大盘: <b style="color:${excess >= 0 ? '#00b894' : '#d63031'}">${excess >= 0 ? '+' : ''}${excess.toFixed(1)}%</b>`;
+        }
+        return html;
+      },
+    },
+    legend: { data: series.map(s => s.name), top: 0, textStyle: { fontSize: 12 } },
+    grid: { left: 60, right: 20, top: 30, bottom: 55 },
+    xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { formatter: fmt } },
+    yAxis: { type: yo.type || 'value', name: yo.name || '', axisLabel: yo.axisLabel || { formatter: v => v.toFixed(1) } },
+    dataZoom: (() => {
+      const dz = zoomDefault(c.length);
+      return [
+        { type: 'inside', start: dz.start, end: dz.end },
+        { type: 'slider', start: dz.start, end: dz.end, height: 24, bottom: 8 },
+      ];
+    })(),
+    series: series,
+  };
+  applyChartOption(containerId, option);
+}
+
+function renderResolutionButtons(containerId, chartId, curve) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const presets = [
+    { label: '月线', res: 'month' },
+    { label: '季线', res: 'quarter' },
+    { label: '年线', res: 'year' },
+  ];
+  const active = chartResolution[chartId] || 'month';
+  el.innerHTML = presets.map(p =>
+    `<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;${p.res === active ? 'background:var(--accent);color:#fff;' : ''}" onclick="chartResolution['${chartId}']='${p.res}';runBacktest()">${p.label}</button>`
+  ).join('');
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+function renderOverview() {
+  const sec = document.getElementById('overview-section');
+  const split = backtestData.split;
+
+  // Only show overview when no split (custom date range)
+  if (split && split.train) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+
+  document.getElementById('overview-date-range').textContent =
+    `${backtestData.date_range.start} → ${backtestData.date_range.end} · ${backtestData.total_months}个月`;
+
+  // Metrics
+  const data = {
+    metrics: backtestData.metrics,
+    win_rate: backtestData.win_rate,
+    months: backtestData.total_months,
+    initial_capital: backtestData.initial_capital,
+  };
+  renderMetricsRow('overview-metrics', data);
+
+  // Holdings button visibility
+  const btn = document.getElementById('btn-overview-holdings');
+  if (backtestData.holdings && backtestData.holdings.length > 0) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+
+  // Chart
+  const curve = backtestData.equity_curve || [];
+  const bmCurve = backtestData.benchmark_curve || [];
+  buildEquityChart('chart-overview', curve, bmCurve);
+  renderResolutionButtons('overview-zoom-btns', 'chart-overview', curve);
+
+  // 跑赢/跑输大盘指标
+  updateOverviewBenchmark(bmCurve, curve);
+}
+
+function updateOverviewBenchmark(bmCurve, strategyCurve) {
+  let el = document.getElementById('overview-benchmark');
+  if (!el) {
+    const metricsRow = document.getElementById('overview-metrics');
+    if (!metricsRow) return;
+    el = document.createElement('div');
+    el.id = 'overview-benchmark';
+    el.style.cssText = 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;';
+    metricsRow.parentNode.insertBefore(el, metricsRow.nextSibling);
+  }
+  if (bmCurve.length === 0 || strategyCurve.length === 0) {
+    el.innerHTML = '<span style="color:var(--text-secondary);">暂无基准数据</span>';
+    return;
+  }
+  const stratFinal = strategyCurve[strategyCurve.length - 1].value;
+  const bmFinal = bmCurve[bmCurve.length - 1].value;
+  const excess = (stratFinal / bmFinal - 1) * 100;
+  const color = excess >= 0 ? 'var(--green)' : 'var(--red)';
+  const arrow = excess >= 0 ? '▲' : '▼';
+  el.innerHTML = `
+    <span>策略终值: <b>${stratFinal.toFixed(2)}</b></span>
+    <span>CSI 1000 终值: <b>${bmFinal.toFixed(2)}</b></span>
+    <span>跑赢/跑输: <b style="color:${color};">${arrow} ${Math.abs(excess).toFixed(1)}%</b></span>
+  `;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// Render: Training Set
+// ═══════════════════════════════════════════════════════════════
+function renderTrainSection() {
+  const split = backtestData.split;
+  const trainSec = document.getElementById('train-section');
+  if (!split || !split.train) { trainSec.classList.add('hidden'); return; }
+  trainSec.classList.remove('hidden');
+
+  const t = split.train;
+  renderMetricsRow('train-metrics', t);
+  document.getElementById('train-date-range').textContent =
+    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月`;
+
+  // Chart
+  const curve = backtestData.train_equity_curve || [];
+  const bmCurve = t.benchmark_curve || [];
+  buildEquityChart('chart-train', curve, bmCurve, {
+    type: 'log', name: '累积净值 (log)',
+    axisLabel: { formatter: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(0) },
+  });
+  renderResolutionButtons('train-zoom-btns', 'chart-train', curve);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render: Test Set
+// ═══════════════════════════════════════════════════════════════
+function renderTestSection() {
+  const split = backtestData.split;
+  const testSec = document.getElementById('test-section');
+  if (!split || !split.test) { testSec.classList.add('hidden'); return; }
+  testSec.classList.remove('hidden');
+
+  const t = split.test;
+  renderMetricsRow('test-metrics', t);
+  document.getElementById('test-date-range').textContent =
+    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月`;
+
+  // Show/hide holdings button
+  const btn = document.getElementById('btn-holdings');
+  if (t.holdings && t.holdings.length > 0) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+
+  // Chart (with markPoints + resampling)
+  const rawCurve = backtestData.test_equity_curve || [];
+  const rawBm = t.benchmark_curve || [];
+  if (rawCurve.length === 0) return;
+  const res = chartResolution['chart-test'] || 'month';
+  const curve = resampleCurve(rawCurve, res);
+  const bmCurve = resampleCurve(rawBm, res);
+  const dates = curve.map(d => d.date);
+  let fmt;
+  if (res === 'year') fmt = v => v.slice(0, 4);
+  else if (res === 'quarter') fmt = v => v.slice(0, 7);
+  else fmt = v => v.slice(0, 7);
+
+  const series = [{
+    name: '策略', type: 'line', data: curve.map(d => d.value),
+    smooth: false, lineStyle: { color: '#e17055', width: 2 },
+    areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1, [
+      { offset: 0, color: 'rgba(225,112,85,0.3)' },
+      { offset: 1, color: 'rgba(225,112,85,0.02)' },
+    ])},
+    markLine: { silent: true, data: [{ yAxis: 1 }],
+      lineStyle: { color: '#b2bec3', type: 'dashed' } },
+    markPoints: {
+      data: curve.map((d, i) => ({
+        name: dates[i],
+        coord: [dates[i], d.value],
+        value: (d.return*100).toFixed(1)+'%',
+      })),
+      symbol: 'pin', symbolSize: 36,
+      label: { fontSize: 10, formatter: '{c}' },
+    },
+  }];
+  if (bmCurve.length > 0) {
+    series.push({
+      name: 'CSI 1000', type: 'line', data: bmCurve.map(d => d.value),
+      smooth: false, lineStyle: { color: '#95a5a6', width: 1.5, type: 'dashed' },
+    });
+  }
+
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      formatter: pts => {
+        if (!pts || pts.length === 0) return '';
+        let html = `${pts[0].axisValue}`;
+        pts.forEach(p => {
+          html += `<br/>${p.seriesName}: <b>${p.value.toFixed(4)}</b>`;
+        });
+        const idx = pts[0].dataIndex;
+        const d = curve[idx];
+        if (d) html += `<br/>周期收益: <b>${(d.return*100).toFixed(2)}%</b>`;
+        return html;
+      }
+    },
+    legend: { data: ['策略', 'CSI 1000'], top: 0, textStyle: { fontSize: 12 } },
+    grid: { left: 70, right: 30, top: 30, bottom: 40 },
+    xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { formatter: fmt } },
+    yAxis: { type: 'value', name: '累积净值', axisLabel: { formatter: v => v.toFixed(2) } },
+    dataZoom: [
+      { type: 'inside', start: 0, end: 100 },
+      { type: 'slider', start: 0, end: 100, height: 24, bottom: 8 },
+    ],
+    series: series,
+  };
+  applyChartOption('chart-test', option);
+  renderResolutionButtons('test-zoom-btns', 'chart-test', rawCurve);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render: Metrics Row
+// ═══════════════════════════════════════════════════════════════
+function renderMetricsRow(containerId, data) {
+  const m = data.metrics;
+  const initialCap = data.initial_capital || 100000;
+  const cards = [
+    { label: '累积净值', value: m.cumulative_return },
+    { label: '年化收益', value: m.annual_return },
+    { label: '最大回撤', value: m.max_drawdown, sub: `${m.max_dd_start} → ${m.max_dd_end}` },
+    { label: '月度胜率', value: (data.win_rate*100).toFixed(1)+'%' },
+    { label: '收益/回撤比', value: m.calmar_ratio },
+    { label: '月份数', value: data.months },
+  ];
+  // 如果有绝对资金指标，追加显示
+  if (m.final_capital && m.final_capital !== 'N/A') {
+    cards.push(
+      { label: '最终资金', value: Number(m.final_capital).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) },
+      { label: '总收益率', value: m.total_return_pct || 'N/A' },
+      { label: '总盈亏', value: Number(m.total_pnl || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) },
+    );
+  }
+  // 如果有 Beta/Alpha 归因指标，追加显示
+  if (m.beta !== undefined) {
+    cards.push(
+      { label: 'Beta', value: m.beta },
+      { label: '年化Alpha', value: (parseFloat(m.annual_alpha) * 100).toFixed(2) + '%' },
+      { label: '信息比率', value: m.information_ratio },
+      { label: 'R²', value: m.r_squared },
+      { label: '上行捕获', value: m.up_capture || '—' },
+      { label: '下行捕获', value: m.down_capture || '—' },
+    );
+  }
+  document.getElementById(containerId).innerHTML = cards.map(c => `
+    <div class="metric-mini">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}</div>
+      ${c.sub ? `<div class="sub">${c.sub}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Holdings Modal
+// ═══════════════════════════════════════════════════════════════
+function showHoldings() {
+  // split模式用测试集，自定义区间用顶层 holdings
+  const split = backtestData?.split;
+  let holdings, title;
+  if (split?.test?.holdings && split.test.holdings.length > 0) {
+    holdings = split.test.holdings;
+    title = '测试集 · 持股明细 & 仓位';
+  } else if (backtestData?.holdings && backtestData.holdings.length > 0) {
+    holdings = backtestData.holdings;
+    title = '持股明细 & 仓位';
+  } else {
+    return;
+  }
+
+  // 更新 modal 标题
+  const h3 = document.querySelector('#holdings-modal h3');
+  if (h3) h3.textContent = title;
+
+  let html = '';
+  holdings.forEach((h, idx) => {
+    const retClass = h.period_return >= 0 ? 'return-positive' : 'return-negative';
+    const stocks = h.stocks || [];
+
+    // 如果是旧格式（codes/names），转为新格式
+    let stockRows = '';
+    if (stocks.length > 0) {
+      stockRows = stocks.map((s, i) => {
+        const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const sellDisplay = s.sell_price != null
+          ? s.sell_price.toFixed(2)
+          : '<span style="color:var(--text-secondary);">暂无</span>';
+        // 因子得分 & 排名
+        const factorStr = s.factor_score != null
+          ? `${Number(s.factor_score).toFixed(2)} (#${s.rank || '—'})`
+          : '—';
+        // PE 显示
+        const peStr = s.pe != null ? s.pe.toFixed(1) : '—';
+        // 行业显示
+        const industry = s.industry_l2 || '—';
+        const reasonSummary = s.selection_reason_summary || factorStr;
+        const reasonDetails = (s.selection_reason_detail || []).map(x => `<li>${x}</li>`).join('');
+        const fundamentals = (s.selection_fundamentals || []).map(x => `<li>${x}</li>`).join('');
+        const factorBreakdown = (s.selection_factor_breakdown || []).map(item => `
+          <li><b>${item.label || '因子'}</b>: ${item.value ?? '—'}${item.role ? ` · ${item.role}` : ''}${item.note ? ` · ${item.note}` : ''}</li>
+        `).join('');
+        return `
+        <tr>
+          <td>${i+1}</td>
+          <td style="font-family:monospace;">${s.code}</td>
+          <td>${s.name || '—'}</td>
+          <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${industry}">${industry}</td>
+          <td style="text-align:right;">${peStr}</td>
+          <td style="font-size:12px;line-height:1.5;max-width:320px;">
+            <div style="font-weight:600;">${reasonSummary}</div>
+            <details style="margin-top:4px;">
+              <summary style="cursor:pointer;color:var(--accent);">查看详情</summary>
+              <div style="margin-top:6px;padding:8px 10px;background:var(--bg);border-radius:6px;">
+                ${reasonDetails ? `<div style="font-weight:600;margin-bottom:4px;">选股逻辑</div><ul style="margin:0 0 8px 16px;padding:0;">${reasonDetails}</ul>` : ''}
+                ${factorBreakdown ? `<div style="font-weight:600;margin-bottom:4px;">因子拆解</div><ul style="margin:0 0 8px 16px;padding:0;">${factorBreakdown}</ul>` : ''}
+                ${fundamentals ? `<div style="font-weight:600;margin-bottom:4px;">财务与行业</div><ul style="margin:0 0 0 16px;padding:0;">${fundamentals}</ul>` : ''}
+              </div>
+            </details>
+          </td>
+          <td style="text-align:right;">${(s.shares || 0).toLocaleString('zh-CN')}</td>
+          <td style="text-align:right;">${(s.buy_price || 0).toFixed(2)}</td>
+          <td style="text-align:right;">${sellDisplay}</td>
+          <td style="text-align:right;color:${pnlColor};font-weight:600;">
+            ${s.pnl >= 0 ? '+' : ''}${s.pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
+          </td>
+        </tr>`;
+      }).join('');
+    } else if (h.codes) {
+      stockRows = h.codes.map((code, i) => `
+        <tr>
+          <td>${i+1}</td>
+          <td style="font-family:monospace;">${code}</td>
+          <td>${h.names[i] || '—'}</td>
+          <td style="color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+          <td style="color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+        </tr>
+      `).join('');
+    }
+
+    html += `
+      <div class="holding-period">
+        <div class="period-header">
+          <span class="period-date">第${idx+1}期 · ${h.date}</span>
+          <span class="period-return ${retClass}">
+            周期收益: ${(h.period_return*100).toFixed(2)}%
+          </span>
+          <span style="font-size:13px;color:var(--text-secondary);">
+            持仓 ${h.stock_count || h.count || stocks.length} 只 · 本金 ¥${h.capital.toLocaleString('zh-CN')}
+          </span>
+          <span style="font-size:13px;color:${h.period_pnl >= 0 ? 'var(--green)' : 'var(--red)'};">
+            盈亏 ¥${h.period_pnl >= 0 ? '+' : ''}${h.period_pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
+          </span>
+        </div>
+        <table class="holding-table">
+          <tr>
+            <th>#</th><th>股票代码</th><th>股票名称</th>
+            <th>细分行业</th>
+            <th style="text-align:right;">PE</th>
+            <th>选股原因</th>
+            <th style="text-align:right;">持仓数量</th>
+            <th style="text-align:right;">成本价</th>
+            <th style="text-align:right;">最新价</th>
+            <th style="text-align:right;">持股盈亏</th>
+          </tr>
+          ${stockRows}
+        </table>
+      </div>`;
+  });
+
+  document.getElementById('holdings-content').innerHTML = html;
+  document.getElementById('holdings-modal').classList.remove('hidden');
+}
+
+function closeHoldings() {
+  document.getElementById('holdings-modal').classList.add('hidden');
+}
+
+// Close modal on overlay click
+document.addEventListener('click', function(e) {
+  if (e.target.id === 'holdings-modal') closeHoldings();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Render: Factor Panel
+// ═══════════════════════════════════════════════════════════════
+function renderFactorPanel() {
+  if (!factorConfig) return;
+  const grid = document.getElementById('factor-grid');
+  let html = '';
+
+  const typeLabel = (type) => {
+    if (type === 'weight') return '权重';
+    if (type === 'trading') return '交易';
+    return '过滤';
+  };
+
+  const parameters = factorConfig.parameters || [];
+  if (parameters.length > 0) {
+    html += parameters.map(p => `
+      <div class="factor-item">
+        <div class="factor-header">
+          <span class="factor-name">${p.label}</span>
+          <span class="factor-type ${p.type}">${typeLabel(p.type)}</span>
+        </div>
+        <div class="factor-desc">${p.description}</div>
+        <div class="slider-row">
+          <input type="range" class="factor-slider"
+            data-key="${p.key}" min="${p.min}" max="${p.max}"
+            step="${p.step}" value="${p.default}"
+            oninput="updateSliderValue(this)">
+          <span class="slider-value" id="val-${p.key}">${p.default}${p.unit || ''}</span>
+        </div>
+      </div>`).join('');
+  }
+
+  const ranking = factorConfig.ranking || {};
+  if (factorConfig.ranking_factor) {
+    const rf = factorConfig.ranking_factor;
+    html += `
+      <div class="ranking-box">
+        <div class="factor-name">排名因子: ${rf.name}</div>
+        <div class="factor-desc">${rf.direction}: ${rf.description}</div>
+        ${ranking.formula ? `<div style="margin-top:8px;font-size:12px;"><b>排序公式:</b> ${ranking.formula}</div>` : ''}
+        ${ranking.normalization_method ? `<div style="margin-top:6px;font-size:12px;"><b>标准化:</b> ${ranking.normalization_method}</div>` : ''}
+        ${rf.weight_details ? `
+          <div style="margin-top:8px; font-size:12px;">
+            ${Object.entries(rf.weight_details).map(([k,v]) =>
+              `<span style="margin-right:12px;">${k}: <b>${(v*100).toFixed(1)}%</b></span>`
+            ).join('')}
+          </div>` : ''}
+      </div>`;
+  }
+
+  const filters = factorConfig.filters || [];
+  if (filters.length > 0) {
+    html += `
+      <div class="factor-subsection">
+        <h4>过滤条件</h4>
+        <div class="factor-list">
+          ${filters.map(item => `
+            <div class="factor-list-item">
+              <div class="title">${item.name}</div>
+              <div class="desc">${item.description}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  const components = ranking.components || [];
+  if (components.length > 0) {
+    html += `
+      <div class="factor-subsection" style="grid-column: 1 / -1;">
+        <h4>排名因子与权重</h4>
+        <div class="factor-list">
+          ${components.map(item => `
+            <div class="factor-list-item">
+              <div class="title">${item.label}</div>
+              <div class="meta">
+                ${item.role || '因子'} · ${item.orientation || '—'} · ${item.transformation || '—'}
+                ${item.weight != null ? ` · 权重/作用 ${(item.weight * 100).toFixed(1)}%` : ''}
+              </div>
+              <div class="desc">${item.notes || ''}${item.source_column ? `（来源列: ${item.source_column}）` : ''}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  grid.innerHTML = html;
+}
+
+function updateSliderValue(slider) {
+  const val = document.getElementById('val-' + slider.dataset.key);
+  if (val) val.textContent = slider.value;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render All
+// ═══════════════════════════════════════════════════════════════
+function renderAll() {
+  if (!backtestData) return;
+  renderOverview();
+  renderTrainSection();
+  renderTestSection();
+  renderFeeInfo();
+  renderCapitalSummary();
+  requestAnimationFrame(() => {
+    Object.values(charts).forEach(c => c.resize());
+  });
+}
+
+function renderFeeInfo() {
+  const fi = backtestData.fee_info;
+  if (!fi) return;
+  let el = document.getElementById('fee-info');
+  if (!el) {
+    // 在 factor-panel 后面插入
+    const panel = document.getElementById('factor-panel');
+    if (!panel) return;
+    el = document.createElement('div');
+    el.id = 'fee-info';
+    el.className = 'factor-panel';
+    panel.parentNode.insertBefore(el, panel.nextSibling);
+  }
+  const cRateBP = (fi.c_rate * 10000).toFixed(1);
+  const tRateBP = (fi.t_rate * 1000).toFixed(1);
+  el.innerHTML = `
+    <div class="panel-title">费率与资金信息</div>
+    <div class="factor-grid">
+      <div class="factor-item">
+        <div class="factor-header">
+          <span class="factor-name">买入手续费率</span>
+          <span class="factor-type filter">万${cRateBP}</span>
+        </div>
+        <div class="factor-desc">买入时收取的券商佣金</div>
+      </div>
+      <div class="factor-item">
+        <div class="factor-header">
+          <span class="factor-name">卖出印花税率</span>
+          <span class="factor-type filter">千${tRateBP}</span>
+        </div>
+        <div class="factor-desc">卖出时收取的印花税（国家规定）</div>
+      </div>
+      <div class="factor-item">
+        <div class="factor-header">
+          <span class="factor-name">初始本金</span>
+          <span class="factor-type filter">${Number(backtestData.initial_capital || 100000).toLocaleString('zh-CN')}</span>
+        </div>
+        <div class="factor-desc">回测起始资金</div>
+      </div>
+      <div class="factor-item">
+        <div class="factor-header">
+          <span class="factor-name">累计费用</span>
+          <span class="factor-type weight">${Number(fi.total_fees || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+        </div>
+        <div class="factor-desc">买入 ${Number(fi.total_buy_fees || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2})} + 卖出 ${Number(fi.total_sell_fees || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2})}</div>
+      </div>
+    </div>`;
+}
+
+function renderCapitalSummary() {
+  const m = backtestData.metrics;
+  if (!m || !m.final_capital || m.final_capital === 'N/A') return;
+  let el = document.getElementById('capital-summary');
+  if (!el) {
+    const controls = document.querySelector('.controls-bar');
+    if (!controls) return;
+    el = document.createElement('div');
+    el.id = 'capital-summary';
+    el.className = 'controls-bar';
+    el.style.background = 'linear-gradient(135deg, #6c5ce7, #a29bfe)';
+    el.style.color = '#fff';
+    el.style.justifyContent = 'space-around';
+    controls.parentNode.insertBefore(el, controls.nextSibling);
+  }
+  const finalCap = Number(m.final_capital);
+  const totalPnl = Number(m.total_pnl || 0);
+  const pnlClass = totalPnl >= 0 ? 'return-positive' : 'return-negative';
+  el.innerHTML = `
+    <div style="text-align:center;">
+      <div style="font-size:11px;opacity:0.8;">初始本金</div>
+      <div style="font-size:18px;font-weight:700;">${Number(backtestData.initial_capital || 100000).toLocaleString('zh-CN')}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:11px;opacity:0.8;">最终资金</div>
+      <div style="font-size:18px;font-weight:700;">${finalCap.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:11px;opacity:0.8;">总收益率</div>
+      <div style="font-size:18px;font-weight:700;">${m.total_return_pct || 'N/A'}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:11px;opacity:0.8;">总盈亏</div>
+      <div style="font-size:18px;font-weight:700;color:${totalPnl >= 0 ? '#00b894' : '#d63031'};">${totalPnl.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+    </div>
+  `;
+}
+
+function resetAll() {
+  document.getElementById('start-date').value = '';
+  document.getElementById('end-date').value = '';
+  document.getElementById('strategy-select').value = 'original';
+  onStrategyChange().then(() => {
+    document.querySelectorAll('.factor-slider').forEach(s => {
+      const cp = factorConfig?.parameters?.find(p => p.key === s.dataset.key);
+      if (cp) { s.value = cp.default; updateSliderValue(s); }
+    });
+    runBacktest();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>

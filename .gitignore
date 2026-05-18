@@ -1,4 +1,5 @@
 __pycache__/
+*.py[cod]
 output/
 .DS_Store
 stock_data.csv

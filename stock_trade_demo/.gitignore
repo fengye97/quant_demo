@@ -1,0 +1,28 @@
+# 字节码缓存
+__pycache__/
+*.py[cod]
+*.pyc
+
+# 大数据文件 — 不要提交
+stock_data.csv
+*.parquet
+
+# 生成结果文件
+选股策略详情*.csv
+选股对比图_*.png
+策略对比图表.png
+选股比赛.png
+position_sizing_results.csv
+sell_side_results.csv
+
+# 环境
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Jupyter / 工具
+.ipynb_checkpoints/
+.cache/

@@ -1,10 +1,18 @@
 # TODO List
+## 5.18
+[x] 1.1 优化股票数据管理 — convert_data.py (CSV→Parquet/Snappy压缩) + backtest.py load_data() Parquet自动检测 + get_data_info() 元信息查询
+[x] 1.2 大盘指数Beta/Alpha归因 — index_data.py (Sina API获取CSI 1000日线→月度收益,缓存) + backtest.py compute_alpha_beta() OLS回归 + web_app.py集成归因指标
+[x] 2.1 初始本金10w + 费率万1.0 — backtest.py select_and_backtest() initial_capital=100000 + c_rate=1.0/10000 + 当期本金/当期盈亏/累计资金列 + strategies/base.py同步更新
+[] 2.2 基于quant_factor.md优化实盘策略 (已实现, 待调参) — QualityValueStrategy (quality_value.py 178行): Size(50%)+BM(25%)+ROE(15%)+Turnover(10%) Z-score复合排名, 市值>20亿+成交额>5000万+ROE>0 过滤, 默认持仓3只。2024-2026回测: 年化17.6%/回撤-54.9% (vs 原版55.6%/-71.5%)。⚠️ 关键发现: (1) 市值过滤天然削弱小市值alpha——A股小市值溢价是收益绝对主导因素; (2) 净资产/归母净利润_ttm为carry-forward数据, BM/ROE因子可靠性存疑; (3) 多持仓(3只)分散降低了波动但未达回撤<30%目标。📋 后续: 进一步调参(仓位/止损/牛熊切换)或引入择时信号
+[x] 3.1 Beta/Alpha 前端展示补充 — benchmark曲线叠加 + 归因指标面板 (beta/alpha/IR/R²/上下行捕获已在metrics card展示, CSI 1000曲线叠加在图表中)
 
+
+## 5.16
 > **完成概览 (2026-05-16)**：8/8 全部完成 ✅
 > 
 > | # | 任务 | 状态 | 核心交付物 |
 > |---|------|------|-----------|
-> | 1 | 缠论PDF分析 + 量化实现 | [x] | chan_theory_analysis.md (850行), chan_theory_factors.py (1399行) |
+> | 1 | 缠论PDF分析 + 量化实现 | [x] | ref_books/chan_theory_analysis.md (850行), chan_theory_factors.py (1399行) |
 > | 1.1 | 缠论因子整合 + 策略实现 | [x] | quant_factor.md §17, choose_stock.py 缠论增强版, 策略对比 (3.42x vs 7.82x) |
 > | 1.2 | **Method A 日线流水线 + 策略迭代** | [x] | chan_monthly_factor_builder.py, choose_stock.py v2.0, STRATEGY_CHANGELOG.md |
 > | 2 | 数据补充 May 2026 | [x] | get_stock_info.py (1370行), stock_data.csv (703,177行) |
@@ -14,9 +22,9 @@
 > 
 > **待办后续 (Backlog)**：① ~~缠论因子改日线流水线 → 月度聚合~~ ✅ ② akshare 完整数据替代 carry-forward ③ RL 在真实数据上训练对比原版策略
 
-## 5.16
+
 [x] 1. 把ref_books/缠中说禅(原文).pdf 分析完成，撰写详细的分析报告，同时确认是否可以提取量化交易的相关因子，或者把本书的思想用代码实现
-    ✅ PM Review: 完成度优秀。chan_theory_analysis.md (850行) 详尽覆盖缠论全体系——从包含关系处理、分型、笔、线段、中枢到背驰和三类买卖点，数学定义与量化规则清晰。chan_theory_factors.py (1399行) 实现了完整的7模块流水线（InclusionProcessor → FractalDetector → StrokeBuilder → SegmentBuilder → HubDetector → DivergenceDetector → TradeSignalGenerator），代码编译通过、自测运行正常。识别了10个可量化因子，具备直接对接A股数据的工程基础。建议后续：(1) 引入成交量辅助中枢判断，(2) 增加多级别联立（区间套）的自动检测，(3) 对笔/线段歧义情况补充更多边界处理。
+    ✅ PM Review: 完成度优秀。ref_books/chan_theory_analysis.md (850行) 详尽覆盖缠论全体系——从包含关系处理、分型、笔、线段、中枢到背驰和三类买卖点，数学定义与量化规则清晰。chan_theory_factors.py (1399行) 实现了完整的7模块流水线（InclusionProcessor → FractalDetector → StrokeBuilder → SegmentBuilder → HubDetector → DivergenceDetector → TradeSignalGenerator），代码编译通过、自测运行正常。识别了10个可量化因子，具备直接对接A股数据的工程基础。建议后续：(1) 引入成交量辅助中枢判断，(2) 增加多级别联立（区间套）的自动检测，(3) 对笔/线段歧义情况补充更多边界处理。
 [x] 1.1 把整理到的缠论中的新因子整合到quant_factor.md中，按照文档中的要求进行review。将quant_factor.md中的因子尝试在stock_trade_demo/choose_stock.py中实现，确认一下收益是否可以突破新高，同时尽量减小回撤幅度。
 	    ✅ PM Review: 完成。quant_factor.md新增Section 17（缠论因子），按规范格式定义了10个因子（分型密度/分型确认率/笔斜率/笔动能/中枢位置/中枢偏离度/中枢宽度/背驰强度/买卖点状态/走势结构），含输入字段、计算公式、排序方向、单变量/双重排序规则、多空构造方式、代码注意事项。总览表（Section 2）已自动合并5个缠论扩展因子。choose_stock.py经两轮迭代：初版用月度代理变量（bias_20/MACD bar），终版（linter增强）用groupby时间序列操作精确计算——chan_bottom_fractal/top_fractal（三K线分型检测）、chan_bullish_div/bearish_div（价格-MACD背离）、chan_zs_position（中枢位置ZG/ZD归一化）、chan_stroke_dir/stroke_strength（笔方向与强度）、chan_signal_score（综合买卖点评分=3*一类买点+2*二类买点+1*三类买点-2*顶分型-2*顶背驰-1*中枢上方）。策略对比结果：原版累积净值7.82（年化11.19%，最大回撤-69.77%）vs 缠论增强累积净值3.42（年化6.54%，最大回撤-72.75%），缠论策略未超越原版。月度收益相关系数0.706，缠论跑赢原版50.0%月份。⚠️ 关键发现：(1) 缠论因子用月度数据计算时丢失了日线级别精细结构（真正的分型/笔/中枢需日K线流水线，月度近似可能产生假信号）；(2) "买低"偏好与A股小市值动量效应方向冲突，过滤掉大量小盘成长机会；(3) 缠论因子的IC方向可能与直觉相反（如高背驰强度在A股可能预示继续下跌而非反转）；(4) 因子权重未经IC优化。📋 建议后续：(a) 用chan_theory_factors.py对每只股票跑完整日线缠论流水线后月度聚合；(b) 逐个因子做IC测试确定有效方向（A股验证）；(c) 缠论因子应与小市值因子协同而非互斥（在小市值桶内用缠论因子排序）；(d) 引入成交量辅助中枢和背驰判断。
 [x] 2. stock_trade_demo/stock_data.csv 这个文档里只有截止到2026.4.30的A股交易数据，看一下get_stock_info.py这个代码是否可用，按照之前同样的数据格式看看把2026年5月份的股票市场数据也完整补充一下，完善一下数据获取代码。

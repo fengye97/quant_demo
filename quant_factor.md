@@ -1350,4 +1350,4 @@ def optimize_portfolio(alpha, benchmark_w, risk_model, constraints, cost_model=N
 10. 动量、短期反转、盈利预期修正等扩展信号
 11. 投资因子与其他辅助研究项
 
-`expected_returns.md` 已单独整理，用于隔离保存《预期收益》的 OCR 恢复笔记与跨资产预期收益研究内容；当前文档继续维持”量化因子与组合管理实现规范”定位，不直接并入该书的独立笔记内容。
+`ref_books/expected_returns.md` 已单独整理，用于隔离保存《预期收益》的 OCR 恢复笔记与跨资产预期收益研究内容；当前文档继续维持”量化因子与组合管理实现规范”定位，不直接并入该书的独立笔记内容。
