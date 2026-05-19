@@ -23,6 +23,7 @@
 
 import ast
 import json
+import math
 import os
 import pandas as pd
 import numpy as np
@@ -31,30 +32,30 @@ def compute_alpha_beta(portfolio_returns, index_returns):
     """
     Compute alpha/beta attribution metrics via OLS regression.
 
-    Regresses monthly strategy returns on monthly index returns:
+    Regresses strategy period returns on aligned benchmark period returns:
         strategy_ret = alpha + beta * index_ret + epsilon
 
-    Dates are aligned by calendar month (both sides use (year, month) keys)
-    so strategy trading dates do not need to be exact month-ends.
+    For regular full backtests, dates align naturally by month. For short custom
+    windows, we still compute attribution as long as at least 2 overlapping
+    periods exist, and annualize alpha by the observed average period length.
 
     Parameters:
-        portfolio_returns: pd.Series of monthly strategy returns,
-                           indexed by trading date (any day of month).
-        index_returns:     pd.Series of monthly index returns,
+        portfolio_returns: pd.Series of strategy period returns,
+                           indexed by trading date.
+        index_returns:     pd.Series of benchmark period returns,
                            indexed by month-end date.
 
     Returns:
-        dict with keys: beta, alpha_monthly, alpha_annualized,
+        dict with keys: beta, alpha_period, alpha_monthly, alpha_annualized,
         tracking_error, information_ratio, up_capture, down_capture,
-        r_squared, n_months.  Returns {'error': ...} on failure.
+        r_squared, n_periods, avg_period_days. Returns {'error': ...} on failure.
     """
-    # Build period lookup for index returns: (year, month) -> return
     idx_lookup = {}
     for idx, val in index_returns.items():
         ts = pd.to_datetime(idx)
         idx_lookup[(ts.year, ts.month)] = float(val)
 
-    # Align strategy and index returns by calendar month
+    aligned_dates = []
     x_vals = []
     y_vals = []
     for date, ret in portfolio_returns.items():
@@ -62,42 +63,53 @@ def compute_alpha_beta(portfolio_returns, index_returns):
         key = (ts.year, ts.month)
         idx_ret = idx_lookup.get(key)
         if idx_ret is not None:
+            aligned_dates.append(ts)
             x_vals.append(idx_ret)
             y_vals.append(float(ret))
 
-    if len(x_vals) < 12:
-        return {'error': f'Insufficient overlapping data: {len(x_vals)} months'}
+    n_periods = len(x_vals)
+    if n_periods < 2:
+        return {'error': f'Insufficient overlapping data: {n_periods} periods'}
 
-    x = np.array(x_vals)
-    y = np.array(y_vals)
+    x = np.array(x_vals, dtype=float)
+    y = np.array(y_vals, dtype=float)
 
-    # OLS regression: y = alpha + beta * x
-    # np.polyfit returns [slope, intercept] for degree 1
-    slope, intercept = np.polyfit(x, y, 1)
+    if n_periods == 2 or np.allclose(x, x[0]) or np.allclose(y, y[0]):
+        beta = 1.0
+        alpha_period = float(np.mean(y - x))
+        r_squared = 0.0
+        residuals = y - x
+    else:
+        slope, intercept = np.polyfit(x, y, 1)
+        beta = float(slope)
+        alpha_period = float(intercept)
+        residuals = y - (intercept + slope * x)
+        ss_res = np.sum(residuals ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    beta = slope
-    alpha_monthly = intercept
+    if n_periods >= 2:
+        span_days = max((aligned_dates[-1] - aligned_dates[0]).days, 1)
+        avg_period_days = max(span_days / max(n_periods - 1, 1), 1.0)
+    else:
+        avg_period_days = 30.0
+    periods_per_year = max(365.0 / avg_period_days, 1.0)
+    monthly_scale = 30.0 / avg_period_days
 
-    # Annualized alpha
-    annualized_alpha = (1 + alpha_monthly) ** 12 - 1
+    if alpha_period <= -0.999999:
+        annualized_alpha = -1.0
+    else:
+        annualized_alpha = (1 + alpha_period) ** periods_per_year - 1
+    alpha_monthly = (1 + alpha_period) ** monthly_scale - 1 if alpha_period > -0.999999 else -1.0
 
-    # Tracking error = std(strategy_ret - index_ret), monthly
     excess = y - x
-    tracking_error = float(np.std(excess, ddof=1))
+    tracking_error = float(np.std(excess, ddof=1)) if n_periods >= 2 else 0.0
 
-    # Information ratio
     if tracking_error > 0:
-        information_ratio = annualized_alpha / (tracking_error * np.sqrt(12))
+        information_ratio = annualized_alpha / (tracking_error * np.sqrt(periods_per_year))
     else:
         information_ratio = 0.0
 
-    # R-squared
-    residuals = y - (intercept + slope * x)
-    ss_res = np.sum(residuals ** 2)
-    ss_tot = np.sum((y - np.mean(y)) ** 2)
-    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-    # Up/down capture ratios
     up_mask = x > 0
     down_mask = x < 0
 
@@ -113,6 +125,7 @@ def compute_alpha_beta(portfolio_returns, index_returns):
 
     return {
         'beta': round(beta, 4),
+        'alpha_period': round(alpha_period, 6),
         'alpha_monthly': round(alpha_monthly, 6),
         'alpha_annualized': round(annualized_alpha, 6),
         'tracking_error': round(tracking_error, 6),
@@ -120,7 +133,9 @@ def compute_alpha_beta(portfolio_returns, index_returns):
         'r_squared': round(r_squared, 4),
         'up_capture': round(up_capture, 4) if up_capture is not None else None,
         'down_capture': round(down_capture, 4) if down_capture is not None else None,
-        'n_months': len(x_vals),
+        'n_periods': n_periods,
+        'n_months': n_periods,
+        'avg_period_days': round(avg_period_days, 2),
     }
 
 
@@ -366,6 +381,30 @@ def apply_take_profit(daily_returns, tp_pct, sell_cost):
     return result, triggered
 
 
+def build_period_daily_curve(daily_lists, tp_pct, sell_cost, buy_cost):
+    """基于单股逐日收益构造单个调仓周期的组合日线。"""
+    period_len = max((len(x) for x in daily_lists if isinstance(x, list)), default=0)
+    if period_len == 0:
+        return [round(float(1 - buy_cost), 6)] if daily_lists else []
+
+    stock_curves = []
+    for daily_ret in daily_lists:
+        if not isinstance(daily_ret, list) or len(daily_ret) == 0:
+            stock_curves.append(np.ones(period_len))
+            continue
+
+        modified, triggered = apply_take_profit(daily_ret, tp_pct, sell_cost)
+        curve = np.cumprod(np.array(modified, dtype=float) + 1.0)
+        if len(curve) > 0 and not triggered:
+            curve[-1] *= (1 - sell_cost)
+        if len(curve) < period_len:
+            curve = np.pad(curve, (0, period_len - len(curve)), constant_values=curve[-1])
+        stock_curves.append(curve)
+
+    portfolio_curve = np.mean(np.vstack(stock_curves), axis=0) * (1 - buy_cost)
+    return [round(float(v), 6) for v in portfolio_curve.tolist()]
+
+
 def select_and_backtest(df, strategy, select_stock_num=6,
                         c_rate=1.0 / 10000, t_rate=1 / 1000,
                         bull_tp=0.30, bear_tp=0.22,
@@ -420,6 +459,7 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     pnls = []           # 当期盈亏
     cum_capitals = []   # 累计资金
     holdings_detail = []  # 每期个股明细 (JSON string)
+    period_daily_curves = []
     total_buy_fees = 0.0
     total_sell_fees = 0.0
 
@@ -435,22 +475,33 @@ def select_and_backtest(df, strategy, select_stock_num=6,
 
         # 取前 n_stocks 只（保持原有顺序，仅取前 n_stocks 行）
         grp_top = grp.head(n_stocks)
+        actual_n_stocks = len(grp_top)
         pool_size = len(grp)
         strategy_name = strategy.__class__.__name__ if strategy is not None else ''
         daily_lists = list(grp_top['下周期每天涨跌幅'])
         stock_codes = list(grp_top['股票代码'].astype(str).str.strip())
         stock_names = list(grp_top['股票名称'].astype(str).str.strip())
-        buy_prices = list(grp_top['收盘价']) if '收盘价' in grp_top.columns else [0] * n_stocks
+        buy_prices = list(grp_top['收盘价']) if '收盘价' in grp_top.columns else [0] * actual_n_stocks
         # 选股因子及财务数据 —— 用于前端展示选股逻辑可解释性
-        factor_scores = list(grp_top['因子']) if '因子' in grp_top.columns else [0] * n_stocks
-        rankings = list(grp_top['排名']) if '排名' in grp_top.columns else [0] * n_stocks
-        industry_l2s = list(grp_top['新版申万二级行业名称']) if '新版申万二级行业名称' in grp_top.columns else [''] * n_stocks
-        pe_invs = list(grp_top['市盈率倒数']) if '市盈率倒数' in grp_top.columns else [0] * n_stocks
-        pb_invs = list(grp_top['市净率倒数']) if '市净率倒数' in grp_top.columns else [0] * n_stocks
-        market_caps = list(grp_top['总市值']) if '总市值' in grp_top.columns else [0] * n_stocks
+        factor_scores = list(grp_top['因子']) if '因子' in grp_top.columns else [0] * actual_n_stocks
+        rankings = list(grp_top['排名']) if '排名' in grp_top.columns else [0] * actual_n_stocks
+        industry_l2s = list(grp_top['新版申万二级行业名称']) if '新版申万二级行业名称' in grp_top.columns else [''] * actual_n_stocks
+        pe_invs = list(grp_top['市盈率倒数']) if '市盈率倒数' in grp_top.columns else [0] * actual_n_stocks
+        pb_invs = list(grp_top['市净率倒数']) if '市净率倒数' in grp_top.columns else [0] * actual_n_stocks
+        market_caps = list(grp_top['总市值']) if '总市值' in grp_top.columns else [0] * actual_n_stocks
 
         capital_start = capital
-        capital_per_stock = capital_start / n_stocks
+        target_weights = strategy.build_position_weights(grp_top) if strategy is not None else []
+        if actual_n_stocks == 0:
+            continue
+        if len(target_weights) != actual_n_stocks or sum(target_weights) <= 0:
+            target_weights = [1.0 / actual_n_stocks] * actual_n_stocks
+        total_weight = sum(target_weights)
+        target_weights = [float(w) / total_weight for w in target_weights]
+        capital_allocations = [capital_start * w for w in target_weights]
+
+        period_daily_curve = build_period_daily_curve(daily_lists, tp, sell_cost, c_rate)
+        period_daily_curves.append(period_daily_curve)
 
         # 本期买入手续费
         period_buy_fees = capital_start * c_rate
@@ -467,6 +518,9 @@ def select_and_backtest(df, strategy, select_stock_num=6,
             rank_value = int(rankings[i]) if i < len(rankings) else 0
             reason = strategy.build_selection_reason(row, rank_value, pool_size)
 
+            target_weight = target_weights[i] if i < len(target_weights) else (1.0 / n_stocks)
+            capital_per_stock = capital_allocations[i] if i < len(capital_allocations) else (capital_start / n_stocks)
+
             # 计算持股数量（A股100股整数倍）
             if buy_price > 0:
                 shares = int(capital_per_stock / buy_price / 100) * 100
@@ -480,7 +534,7 @@ def select_and_backtest(df, strategy, select_stock_num=6,
                 final_rets.append(1.0)
                 stock_details.append({
                     'code': code, 'name': name,
-                    'weight': round(1.0 / n_stocks, 4),
+                    'weight': round(float(target_weight), 6),
                     'return': 0.0, 'pnl': 0.0,
                     'buy_price': round(buy_price, 2),
                     'sell_price': None,
@@ -526,7 +580,7 @@ def select_and_backtest(df, strategy, select_stock_num=6,
 
             stock_details.append({
                 'code': code, 'name': name,
-                'weight': round(1.0 / n_stocks, 4),
+                'weight': round(float(target_weight), 6),
                 'return': round(float(cumret - 1), 6),
                 'pnl': round(float(stock_pnl), 2),
                 'buy_price': round(buy_price, 2),
@@ -548,8 +602,8 @@ def select_and_backtest(df, strategy, select_stock_num=6,
 
         total_sell_fees += period_sell_fees
 
-        # 组合收益 = 持仓等权平均 * (1 - 买入手续费)
-        portfolio_ret = np.mean(final_rets)
+        # 组合收益 = 各持仓按目标权重加权后的组合收益 * (1 - 买入手续费)
+        portfolio_ret = float(np.dot(final_rets, target_weights))
         portfolio_ret *= (1 - c_rate)
         period_return = portfolio_ret - 1
         period_returns.append(period_return)
@@ -572,6 +626,28 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     select_stock['累计资金'] = cum_capitals
     select_stock['买入个股收益'] = holdings_detail
 
+    daily_equity_curve = []
+    daily_value = 1.0
+    for period_idx, period_curve in enumerate(period_daily_curves):
+        trade_date = pd.to_datetime(select_stock.iloc[period_idx]['交易日期'])
+        if not period_curve:
+            daily_equity_curve.append({
+                'date': trade_date.strftime('%Y-%m-%d'),
+                'value': round(float(daily_value), 6),
+                'return': 0.0,
+            })
+            continue
+        prev = 1.0
+        for day_idx, period_value in enumerate(period_curve, start=1):
+            day_ret = 0.0 if prev == 0 else float(period_value / prev - 1)
+            daily_value *= (1 + day_ret)
+            daily_equity_curve.append({
+                'date': (trade_date + pd.Timedelta(days=day_idx)).strftime('%Y-%m-%d'),
+                'value': round(float(daily_value), 6),
+                'return': round(day_ret, 6),
+            })
+            prev = period_value
+
     # 存储元信息
     select_stock.attrs['initial_capital'] = initial_capital
     select_stock.attrs['c_rate'] = c_rate
@@ -580,6 +656,8 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     select_stock.attrs['total_buy_fees'] = total_buy_fees
     select_stock.attrs['total_sell_fees'] = total_sell_fees
     select_stock.attrs['total_fees'] = total_buy_fees + total_sell_fees
+    select_stock.attrs['period_daily_curves'] = period_daily_curves
+    select_stock.attrs['daily_equity_curve'] = daily_equity_curve
 
     return select_stock
 
@@ -677,20 +755,32 @@ def strategy_evaluate(select_stock, initial_capital=None, index_returns=None):
         attr = compute_alpha_beta(strategy_rets, index_returns)
 
         if 'error' not in attr:
-            results.loc[0, 'Beta'] = attr['beta']
-            results.loc[0, '月度Alpha'] = f"{round(attr['alpha_monthly'] * 100, 4)}%"
-            results.loc[0, '年化Alpha'] = f"{round(attr['alpha_annualized'] * 100, 2)}%"
-            results.loc[0, '信息比率'] = attr['information_ratio']
-            results.loc[0, 'R-squared'] = attr['r_squared']
-            results.loc[0, '跟踪误差（月）'] = f"{round(attr['tracking_error'] * 100, 2)}%"
-            if attr['up_capture'] is not None:
+            def _finite_number(val):
+                return val is not None and isinstance(val, (int, float, np.integer, np.floating)) and math.isfinite(float(val))
+
+            results.loc[0, 'Beta'] = attr['beta'] if _finite_number(attr.get('beta')) else 'N/A'
+            results.loc[0, '月度Alpha'] = f"{round(attr['alpha_monthly'] * 100, 4)}%" if _finite_number(attr.get('alpha_monthly')) else 'N/A'
+            results.loc[0, '年化Alpha'] = f"{round(attr['alpha_annualized'] * 100, 2)}%" if _finite_number(attr.get('alpha_annualized')) else 'N/A'
+            results.loc[0, '信息比率'] = attr['information_ratio'] if _finite_number(attr.get('information_ratio')) else 'N/A'
+            results.loc[0, 'R-squared'] = attr['r_squared'] if _finite_number(attr.get('r_squared')) else 'N/A'
+            results.loc[0, '跟踪误差（月）'] = f"{round(attr['tracking_error'] * 100, 2)}%" if _finite_number(attr.get('tracking_error')) else 'N/A'
+            if _finite_number(attr.get('up_capture')):
                 results.loc[0, '上行捕获率'] = f"{round(attr['up_capture'] * 100, 1)}%"
             else:
                 results.loc[0, '上行捕获率'] = 'N/A'
-            if attr['down_capture'] is not None:
+            if _finite_number(attr.get('down_capture')):
                 results.loc[0, '下行捕获率'] = f"{round(attr['down_capture'] * 100, 1)}%"
             else:
                 results.loc[0, '下行捕获率'] = 'N/A'
-            results.loc[0, '归因月份数'] = attr['n_months']
+            results.loc[0, '归因月份数'] = attr.get('n_months', attr.get('n_periods'))
+        else:
+            results.loc[0, 'Beta'] = 'N/A'
+            results.loc[0, '月度Alpha'] = 'N/A'
+            results.loc[0, '年化Alpha'] = 'N/A'
+            results.loc[0, '信息比率'] = 'N/A'
+            results.loc[0, 'R-squared'] = 'N/A'
+            results.loc[0, '跟踪误差（月）'] = 'N/A'
+            results.loc[0, '上行捕获率'] = 'N/A'
+            results.loc[0, '下行捕获率'] = 'N/A'
 
     return results.T

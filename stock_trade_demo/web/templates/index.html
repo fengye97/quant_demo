@@ -62,6 +62,12 @@
   .btn-secondary:hover { background: #e8e8e8; }
   .btn-orange { background: var(--orange); color: #fff; }
   .btn-orange:hover { background: #d05a3f; }
+  .quick-period-btn.active {
+    background: var(--accent) !important;
+    color: #fff !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px rgba(9,132,227,0.12);
+  }
 
   /* Split sections */
   .section-card {
@@ -128,6 +134,24 @@
     font-weight: 700; font-size: 15px;
   }
   .holding-period .period-return { font-weight: 700; }
+  .holding-benchmark-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .holding-benchmark-chip {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .holding-benchmark-chip .value {
+    font-weight: 700;
+    margin-left: 4px;
+  }
   .holding-table {
     width: 100%; border-collapse: collapse; font-size: 13px;
   }
@@ -224,6 +248,120 @@
     font-size: 12px; color: var(--text-secondary);
   }
 
+  .strategy-note {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    max-width: 260px;
+    line-height: 1.5;
+  }
+
+  .factor-overview-summary {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+
+  .overview-chip {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .overview-chip.active {
+    background: rgba(9,132,227,0.12);
+    border-color: rgba(9,132,227,0.25);
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .factor-overview-table-wrap {
+    overflow-x: auto;
+  }
+
+  .factor-overview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    min-width: 900px;
+  }
+
+  .factor-overview-table th,
+  .factor-overview-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .factor-overview-table th {
+    background: #eef2f7;
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+  }
+
+  .factor-overview-table tr.active-row {
+    background: rgba(9,132,227,0.06);
+  }
+
+  .factor-overview-table tr.active-row td:first-child {
+    border-left: 4px solid var(--accent);
+  }
+
+  .factor-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: #dfe6e9;
+    color: #636e72;
+    white-space: nowrap;
+  }
+
+  .factor-badge.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .muted-small {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .profile-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .profile-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  .profile-card .title {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .profile-card .meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
   @media (max-width: 900px) {
     .metrics-row { grid-template-columns: repeat(2, 1fr); }
   }
@@ -236,11 +374,12 @@
     <div>
       <h1>量化选股策略 · 可视化分析 <span style="background:#00b894;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;">v2 · 训练/测试集</span></h1>
       <p class="subtitle" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <span>行业估值分位 + bias反转 + 小市值 | 训练集: ≤2026-02-28 | 测试集: >2026-02-28</span>
+        <span>多窗口投票版原策略 | 训练集: ≤2026-03-31 | 测试集: >2026-03-31</span>
         <span id="data-date-badge" style="background:#6c5ce7;color:#fff;font-size:12px;padding:3px 10px;border-radius:12px;font-weight:600;white-space:nowrap;">数据更新至: ---</span>
       </p>
     </div>
     <div style="display:flex; gap:8px;">
+      <button class="btn btn-secondary" onclick="window.location.href='/timing'">指数择时页</button>
       <button class="btn btn-secondary" onclick="resetAll()">重置参数</button>
       <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
     </div>
@@ -249,12 +388,15 @@
   <div class="controls-bar">
     <div class="control-group">
       <label>策略</label>
-      <select id="strategy-select" onchange="onStrategyChange()">
-        <option value="original">原版策略 (5223x)</option>
-        <option value="chan_enhanced">缠论增强 v1.1 (5131x)</option>
-        <option value="chan_only">纯缠论 v1.2 (16x)</option>
-        <option value="method_a">Method A v2.0 (5223x)</option>
-        <option value="quality_value">质量价值小盘 v3.0</option>
+      <select id="strategy-select" onchange="onStrategyChange()"></select>
+      <div class="strategy-note" id="strategy-note">当前只保留收益最高的主策略，便于集中优化。</div>
+    </div>
+    <div class="control-group">
+      <label>对照基准</label>
+      <select id="benchmark-select" onchange="runBacktest()">
+        <option value="csi1000">CSI 1000</option>
+        <option value="chinext">创业板指数</option>
+        <option value="star50">科创50指数</option>
       </select>
     </div>
     <div class="control-group">
@@ -268,11 +410,11 @@
     <div class="control-group" style="gap:6px;">
       <label>快速周期</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="btn btn-secondary" onclick="quickPeriod('month')" style="padding:6px 12px;font-size:12px;">近一月</button>
-        <button class="btn btn-secondary" onclick="quickPeriod('quarter')" style="padding:6px 12px;font-size:12px;">近一季</button>
-        <button class="btn btn-secondary" onclick="quickPeriod('half')" style="padding:6px 12px;font-size:12px;">近半年</button>
-        <button class="btn btn-secondary" onclick="quickPeriod('year')" style="padding:6px 12px;font-size:12px;">近一年</button>
-        <button class="btn btn-secondary" onclick="quickPeriod('3year')" style="padding:6px 12px;font-size:12px;">近三年</button>
+        <button class="btn btn-secondary quick-period-btn" data-period="month" onclick="quickPeriod('month')" style="padding:6px 12px;font-size:12px;">近一月</button>
+        <button class="btn btn-secondary quick-period-btn" data-period="quarter" onclick="quickPeriod('quarter')" style="padding:6px 12px;font-size:12px;">近一季</button>
+        <button class="btn btn-secondary quick-period-btn" data-period="half" onclick="quickPeriod('half')" style="padding:6px 12px;font-size:12px;">近半年</button>
+        <button class="btn btn-secondary quick-period-btn" data-period="year" onclick="quickPeriod('year')" style="padding:6px 12px;font-size:12px;">近一年</button>
+        <button class="btn btn-secondary quick-period-btn" data-period="3year" onclick="quickPeriod('3year')" style="padding:6px 12px;font-size:12px;">近三年</button>
       </div>
     </div>
     <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
@@ -301,7 +443,7 @@
   <div class="section-card" id="train-section">
     <div class="section-header">
       <div class="section-title">
-        训练集 <span class="section-badge badge-train">≤ 2026-02-28</span>
+        训练集 <span class="section-badge badge-train">≤ 2026-03-31</span>
       </div>
       <span style="font-size:13px;color:var(--text-secondary);" id="train-date-range"></span>
     </div>
@@ -314,7 +456,7 @@
   <div class="section-card" id="test-section">
     <div class="section-header">
       <div class="section-title">
-        测试集 <span class="section-badge badge-test">> 2026-02-28</span>
+        测试集 <span class="section-badge badge-test">> 2026-03-31</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <span style="font-size:13px;color:var(--text-secondary);" id="test-date-range"></span>
@@ -331,6 +473,31 @@
     <div class="panel-title">因子参数 & 权重配置</div>
     <div class="factor-grid" id="factor-grid"></div>
   </div>
+
+  <div class="factor-panel" id="factor-overview-panel">
+    <div class="panel-title">量化因子一览表</div>
+    <div id="factor-overview-summary" class="factor-overview-summary"></div>
+    <div id="profile-summary" class="profile-summary-grid"></div>
+    <div class="factor-overview-table-wrap">
+      <table class="factor-overview-table">
+        <thead>
+          <tr>
+            <th>因子名</th>
+            <th>核心字段</th>
+            <th>排序方向</th>
+            <th>单变量多空</th>
+            <th>双重排序</th>
+            <th>是否书中主推</th>
+            <th>当前策略</th>
+          </tr>
+        </thead>
+        <tbody id="factor-overview-body"></tbody>
+      </table>
+    </div>
+    <div class="muted-small" style="margin-top:10px;">
+      当前高亮表示“当前前端保留策略实际使用/直接依赖的主因子”，未高亮项保留为后续优化候选库。
+    </div>
+  </div>
 </div>
 
 <!-- ============ Holdings Modal ============ -->
@@ -346,7 +513,10 @@
 const charts = {};
 let backtestData = null;
 let factorConfig = null;
+let factorOverview = null;
+let strategyList = [];
 let dataInfo = null;  // { data_min_date, data_max_date }
+let selectedQuickPeriod = null;
 
 function applyChartOption(chartId, option) {
   const chart = charts[chartId];
@@ -378,23 +548,63 @@ async function fetchDataInfo() {
   } catch(e) { console.error('fetchDataInfo:', e); }
 }
 
-function init() {
+async function init() {
   ['chart-overview', 'chart-train', 'chart-test'].forEach(id => {
     const dom = document.getElementById(id);
     if (dom) charts[id] = echarts.init(dom);
   });
   window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
-  fetchDataInfo();
-  onStrategyChange().then(() => runBacktest());
+  await fetchDataInfo();
+  await loadStrategyList();
+  await onStrategyChange();
+  runBacktest();
+}
+
+async function loadStrategyList() {
+  try {
+    const resp = await fetch('/api/strategy_list');
+    strategyList = await resp.json();
+    const select = document.getElementById('strategy-select');
+    if (!select) return;
+    select.innerHTML = (strategyList || []).map(item => `
+      <option value="${item.id}">${item.name}${item.cumulative_return ? ` (${item.cumulative_return})` : ''}</option>
+    `).join('');
+    if (strategyList.length > 0) {
+      select.value = strategyList[0].id;
+      const note = document.getElementById('strategy-note');
+      if (note) {
+        const focusText = strategyList[0].focus_only ? '当前前端只保留收益最高的主策略，便于集中优化。' : '';
+        note.textContent = `${focusText}${strategyList[0].description ? ` 当前策略：${strategyList[0].description}` : ''}`.trim();
+      }
+    }
+  } catch(e) {
+    console.error('loadStrategyList:', e);
+  }
 }
 
 async function onStrategyChange() {
   const strategy = document.getElementById('strategy-select').value;
   try {
-    const resp = await fetch(`/api/factors?strategy=${strategy}`);
-    factorConfig = await resp.json();
+    const [factorResp, overviewResp] = await Promise.all([
+      fetch(`/api/factors?strategy=${strategy}`),
+      fetch(`/api/factor_overview?strategy=${strategy}`),
+    ]);
+    factorConfig = await factorResp.json();
+    factorOverview = await overviewResp.json();
     renderFactorPanel();
+    renderFactorOverview();
   } catch(e) { console.error(e); }
+}
+
+function updateQuickPeriodButtons() {
+  document.querySelectorAll('.quick-period-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.period === selectedQuickPeriod);
+  });
+}
+
+function clearQuickPeriodSelection() {
+  selectedQuickPeriod = null;
+  updateQuickPeriodButtons();
 }
 
 function quickPeriod(period) {
@@ -412,6 +622,8 @@ function quickPeriod(period) {
   const fmt = d => d.toISOString().slice(0, 10);
   document.getElementById('start-date').value = fmt(start);
   document.getElementById('end-date').value = fmt(end);
+  selectedQuickPeriod = period;
+  updateQuickPeriodButtons();
   runBacktest();
 }
 
@@ -420,10 +632,11 @@ async function runBacktest() {
   document.getElementById('error-banner').classList.add('hidden');
 
   const strategy = document.getElementById('strategy-select').value;
+  const benchmark = document.getElementById('benchmark-select').value;
   const startDate = document.getElementById('start-date').value;
   const endDate = document.getElementById('end-date').value;
 
-  let params = `strategy=${strategy}`;
+  let params = `strategy=${strategy}&benchmark=${benchmark}`;
   if (startDate) params += `&start=${startDate}`;
   if (endDate) params += `&end=${endDate}`;
   document.querySelectorAll('.factor-slider').forEach(s => {
@@ -477,7 +690,7 @@ function _y(p) { return Array.isArray(p.value) ? p.value[1] : p.value; }
 
 // Resample monthly equity curve to quarterly/yearly
 function resampleCurve(curve, resolution) {
-  if (resolution === 'month' || !curve || curve.length === 0) return curve;
+  if (resolution === 'day' || resolution === 'month' || !curve || curve.length === 0) return curve;
   const groups = {};
   curve.forEach(d => {
     const dt = new Date(d.date);
@@ -497,6 +710,11 @@ function resampleCurve(curve, resolution) {
     cum *= (1 + periodRet);
     return { date: g.lastDate, value: parseFloat(cum.toFixed(4)), return: parseFloat(periodRet.toFixed(6)) };
   });
+}
+
+function selectCurveForResolution(monthlyCurve, dailyCurve, resolution) {
+  if (resolution === 'day' && dailyCurve && dailyCurve.length > 0) return dailyCurve;
+  return monthlyCurve || [];
 }
 
 // dataZoom defaults: if >24 points, start zoomed to show ~24 most-recent points
@@ -522,18 +740,37 @@ function applyZoom(chartId, months, totalMonths) {
 // Track current resolution per chart
 const chartResolution = {};
 
-function buildEquityChart(containerId, curve, bmCurve, yOpts) {
+function normalizeBenchmarkCurves(primaryCurve, benchmarkCurves) {
+  if (Array.isArray(benchmarkCurves) && benchmarkCurves.length > 0) return benchmarkCurves;
+  if (primaryCurve && primaryCurve.length > 0) {
+    return [{ id: 'csi1000', name: 'CSI 1000', curve: primaryCurve }];
+  }
+  return [];
+}
+
+function buildEquityChart(containerId, curve, benchmarkCurves, yOpts, dailyCurve) {
   const chart = charts[containerId];
-  if (!chart || curve.length === 0) return;
+  if (!chart) return;
   const res = chartResolution[containerId] || 'month';
-  const c = resampleCurve(curve, res);
-  const bm = resampleCurve(bmCurve || [], res);
+  const baseCurve = selectCurveForResolution(curve, dailyCurve, res);
+  if (baseCurve.length === 0) return;
+  const c = resampleCurve(baseCurve, res);
+  const benchmarks = res === 'day' ? [] : normalizeBenchmarkCurves([], benchmarkCurves).map(item => ({
+    ...item,
+    curve: resampleCurve(item.curve || [], res),
+  })).filter(item => item.curve.length > 0);
   const dates = c.map(d => d.date);
 
   let fmt;
   if (res === 'year') fmt = v => v.slice(0, 4);
   else if (res === 'quarter') fmt = v => v.slice(0, 7);
-  else fmt = v => v.slice(0, 7);
+  else fmt = v => v.slice(0, 10);
+
+  const benchmarkColors = {
+    csi1000: '#95a5a6',
+    chinext: '#8e44ad',
+    star50: '#00b894',
+  };
 
   const series = [{
     name: '策略', type: 'line', data: c.map(d => d.value),
@@ -543,12 +780,12 @@ function buildEquityChart(containerId, curve, bmCurve, yOpts) {
     ])},
     markLine: { silent: true, data: [{ yAxis: 1 }], lineStyle: { color: '#b2bec3', type: 'dashed' } },
   }];
-  if (bm.length > 0) {
+  benchmarks.forEach(item => {
     series.push({
-      name: 'CSI 1000', type: 'line', data: bm.map(d => d.value),
-      smooth: false, lineStyle: { color: '#b2bec3', width: 1.5, type: 'dashed' },
+      name: item.name, type: 'line', data: item.curve.map(d => d.value),
+      smooth: false, lineStyle: { color: benchmarkColors[item.id] || '#b2bec3', width: 1.5, type: 'dashed' },
     });
-  }
+  });
 
   const yo = yOpts || {};
   const option = {
@@ -587,6 +824,7 @@ function renderResolutionButtons(containerId, chartId, curve) {
   const el = document.getElementById(containerId);
   if (!el) return;
   const presets = [
+    { label: '日线', res: 'day' },
     { label: '月线', res: 'month' },
     { label: '季线', res: 'quarter' },
     { label: '年线', res: 'year' },
@@ -629,15 +867,17 @@ function renderOverview() {
 
   // Chart
   const curve = backtestData.equity_curve || [];
-  const bmCurve = backtestData.benchmark_curve || [];
-  buildEquityChart('chart-overview', curve, bmCurve);
+  const dailyCurve = backtestData.daily_equity_curve || [];
+  const benchmarkCurves = normalizeBenchmarkCurves(backtestData.benchmark_curve || [], backtestData.benchmark_curves || []);
+  buildEquityChart('chart-overview', curve, benchmarkCurves, undefined, dailyCurve);
   renderResolutionButtons('overview-zoom-btns', 'chart-overview', curve);
 
   // 跑赢/跑输大盘指标
-  updateOverviewBenchmark(bmCurve, curve);
+  updateOverviewBenchmark(benchmarkCurves, curve);
 }
 
-function updateOverviewBenchmark(bmCurve, strategyCurve) {
+function updateOverviewBenchmark(benchmarkCurves, strategyCurve) {
+  const activeBenchmarkId = backtestData?.active_benchmark?.id;
   let el = document.getElementById('overview-benchmark');
   if (!el) {
     const metricsRow = document.getElementById('overview-metrics');
@@ -647,20 +887,25 @@ function updateOverviewBenchmark(bmCurve, strategyCurve) {
     el.style.cssText = 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;';
     metricsRow.parentNode.insertBefore(el, metricsRow.nextSibling);
   }
-  if (bmCurve.length === 0 || strategyCurve.length === 0) {
+  if (!benchmarkCurves || benchmarkCurves.length === 0 || strategyCurve.length === 0) {
     el.innerHTML = '<span style="color:var(--text-secondary);">暂无基准数据</span>';
     return;
   }
   const stratFinal = strategyCurve[strategyCurve.length - 1].value;
-  const bmFinal = bmCurve[bmCurve.length - 1].value;
-  const excess = (stratFinal / bmFinal - 1) * 100;
-  const color = excess >= 0 ? 'var(--green)' : 'var(--red)';
-  const arrow = excess >= 0 ? '▲' : '▼';
-  el.innerHTML = `
-    <span>策略终值: <b>${stratFinal.toFixed(2)}</b></span>
-    <span>CSI 1000 终值: <b>${bmFinal.toFixed(2)}</b></span>
-    <span>跑赢/跑输: <b style="color:${color};">${arrow} ${Math.abs(excess).toFixed(1)}%</b></span>
-  `;
+  el.innerHTML = benchmarkCurves.map(item => {
+    const curve = item.curve || [];
+    if (curve.length === 0) return '';
+    const bmFinal = curve[curve.length - 1].value;
+    const excess = (stratFinal / bmFinal - 1) * 100;
+    const color = excess >= 0 ? 'var(--green)' : 'var(--red)';
+    const arrow = excess >= 0 ? '▲' : '▼';
+    const activeBadge = item.id === activeBenchmarkId ? '<span style="margin-left:6px;background:var(--accent);color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;">当前归因基准</span>' : '';
+    return `
+      <span>策略终值: <b>${stratFinal.toFixed(2)}</b></span>
+      <span>${item.name}${activeBadge} 终值: <b>${bmFinal.toFixed(2)}</b></span>
+      <span>${item.name} 跑赢/跑输: <b style="color:${color};">${arrow} ${Math.abs(excess).toFixed(1)}%</b></span>
+    `;
+  }).join('');
 }
 
 
@@ -680,11 +925,12 @@ function renderTrainSection() {
 
   // Chart
   const curve = backtestData.train_equity_curve || [];
-  const bmCurve = t.benchmark_curve || [];
-  buildEquityChart('chart-train', curve, bmCurve, {
+  const dailyCurve = backtestData.train_daily_equity_curve || [];
+  const benchmarkCurves = normalizeBenchmarkCurves(t.benchmark_curve || [], t.benchmark_curves || []);
+  buildEquityChart('chart-train', curve, benchmarkCurves, {
     type: 'log', name: '累积净值 (log)',
     axisLabel: { formatter: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(0) },
-  });
+  }, dailyCurve);
   renderResolutionButtons('train-zoom-btns', 'chart-train', curve);
 }
 
@@ -712,17 +958,27 @@ function renderTestSection() {
 
   // Chart (with markPoints + resampling)
   const rawCurve = backtestData.test_equity_curve || [];
-  const rawBm = t.benchmark_curve || [];
-  if (rawCurve.length === 0) return;
+  const rawDailyCurve = backtestData.test_daily_equity_curve || [];
+  const rawBenchmarks = normalizeBenchmarkCurves(t.benchmark_curve || [], t.benchmark_curves || []);
   const res = chartResolution['chart-test'] || 'month';
-  const curve = resampleCurve(rawCurve, res);
-  const bmCurve = resampleCurve(rawBm, res);
+  const selectedCurve = selectCurveForResolution(rawCurve, rawDailyCurve, res);
+  if (selectedCurve.length === 0) return;
+  const curve = resampleCurve(selectedCurve, res);
+  const benchmarkCurves = res === 'day' ? [] : rawBenchmarks.map(item => ({
+    ...item,
+    curve: resampleCurve(item.curve || [], res),
+  })).filter(item => item.curve.length > 0);
   const dates = curve.map(d => d.date);
   let fmt;
   if (res === 'year') fmt = v => v.slice(0, 4);
   else if (res === 'quarter') fmt = v => v.slice(0, 7);
-  else fmt = v => v.slice(0, 7);
+  else fmt = v => v.slice(0, 10);
 
+  const benchmarkColors = {
+    csi1000: '#95a5a6',
+    chinext: '#8e44ad',
+    star50: '#00b894',
+  };
   const series = [{
     name: '策略', type: 'line', data: curve.map(d => d.value),
     smooth: false, lineStyle: { color: '#e17055', width: 2 },
@@ -742,12 +998,12 @@ function renderTestSection() {
       label: { fontSize: 10, formatter: '{c}' },
     },
   }];
-  if (bmCurve.length > 0) {
+  benchmarkCurves.forEach(item => {
     series.push({
-      name: 'CSI 1000', type: 'line', data: bmCurve.map(d => d.value),
-      smooth: false, lineStyle: { color: '#95a5a6', width: 1.5, type: 'dashed' },
+      name: item.name, type: 'line', data: item.curve.map(d => d.value),
+      smooth: false, lineStyle: { color: benchmarkColors[item.id] || '#95a5a6', width: 1.5, type: 'dashed' },
     });
-  }
+  });
 
   const option = {
     tooltip: {
@@ -764,7 +1020,7 @@ function renderTestSection() {
         return html;
       }
     },
-    legend: { data: ['策略', 'CSI 1000'], top: 0, textStyle: { fontSize: 12 } },
+    legend: { data: series.map(s => s.name), top: 0, textStyle: { fontSize: 12 } },
     grid: { left: 70, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { formatter: fmt } },
     yAxis: { type: 'value', name: '累积净值', axisLabel: { formatter: v => v.toFixed(2) } },
@@ -776,6 +1032,40 @@ function renderTestSection() {
   };
   applyChartOption('chart-test', option);
   renderResolutionButtons('test-zoom-btns', 'chart-test', rawCurve);
+}
+
+function formatCurrency(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatPercent(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return (Number(value) * 100).toFixed(2) + '%';
+}
+
+function normalizeMetricValue(value, fallback = 'N/A') {
+  if (value == null) return fallback;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : fallback;
+  }
+  const text = String(value).trim();
+  if (!text) return fallback;
+  const lower = text.toLowerCase();
+  if (lower === 'nan' || lower === 'nan%' || lower === 'n/a' || lower === 'none' || lower === 'undefined') return fallback;
+  return text;
+}
+
+function formatMetricPercentText(value, fallback = 'N/A') {
+  const normalized = normalizeMetricValue(value, fallback);
+  if (normalized === fallback) return fallback;
+  if (normalized.endsWith('%')) {
+    const numeric = Number(normalized.slice(0, -1));
+    return Number.isFinite(numeric) ? normalized : fallback;
+  }
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return fallback;
+  return (numeric * 100).toFixed(2) + '%';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -803,12 +1093,12 @@ function renderMetricsRow(containerId, data) {
   // 如果有 Beta/Alpha 归因指标，追加显示
   if (m.beta !== undefined) {
     cards.push(
-      { label: 'Beta', value: m.beta },
-      { label: '年化Alpha', value: (parseFloat(m.annual_alpha) * 100).toFixed(2) + '%' },
-      { label: '信息比率', value: m.information_ratio },
-      { label: 'R²', value: m.r_squared },
-      { label: '上行捕获', value: m.up_capture || '—' },
-      { label: '下行捕获', value: m.down_capture || '—' },
+      { label: 'Beta', value: normalizeMetricValue(m.beta) },
+      { label: '年化Alpha', value: formatMetricPercentText(m.annual_alpha) },
+      { label: '信息比率', value: normalizeMetricValue(m.information_ratio) },
+      { label: 'R²', value: normalizeMetricValue(m.r_squared) },
+      { label: '上行捕获', value: normalizeMetricValue(m.up_capture, '—') },
+      { label: '下行捕获', value: normalizeMetricValue(m.down_capture, '—') },
     );
   }
   document.getElementById(containerId).innerHTML = cards.map(c => `
@@ -845,6 +1135,12 @@ function showHoldings() {
   holdings.forEach((h, idx) => {
     const retClass = h.period_return >= 0 ? 'return-positive' : 'return-negative';
     const stocks = h.stocks || [];
+    const benchmarkReturns = Array.isArray(h.benchmark_returns) ? h.benchmark_returns : [];
+    const benchmarkHtml = benchmarkReturns.map(item => {
+      const valueClass = (item.return || 0) >= 0 ? 'return-positive' : 'return-negative';
+      const sign = (item.return || 0) >= 0 ? '+' : '';
+      return `<span class="holding-benchmark-chip">${item.name}<span class="value ${valueClass}">${sign}${((item.return || 0) * 100).toFixed(2)}%</span></span>`;
+    }).join('');
 
     // 如果是旧格式（codes/names），转为新格式
     let stockRows = '';
@@ -854,13 +1150,20 @@ function showHoldings() {
         const sellDisplay = s.sell_price != null
           ? s.sell_price.toFixed(2)
           : '<span style="color:var(--text-secondary);">暂无</span>';
+        const positionValueDisplay = s.position_market_value != null
+          ? formatCurrency(s.position_market_value)
+          : '<span style="color:var(--text-secondary);">—</span>';
+        const positionWeightDisplay = s.position_weight != null
+          ? formatPercent(s.position_weight)
+          : '<span style="color:var(--text-secondary);">—</span>';
         // 因子得分 & 排名
         const factorStr = s.factor_score != null
           ? `${Number(s.factor_score).toFixed(2)} (#${s.rank || '—'})`
           : '—';
         // PE 显示
         const peStr = s.pe != null ? s.pe.toFixed(1) : '—';
-        // 行业显示
+        // 市场/行业显示
+        const marketLabel = s.market_label || '—';
         const industry = s.industry_l2 || '—';
         const reasonSummary = s.selection_reason_summary || factorStr;
         const reasonDetails = (s.selection_reason_detail || []).map(x => `<li>${x}</li>`).join('');
@@ -873,6 +1176,7 @@ function showHoldings() {
           <td>${i+1}</td>
           <td style="font-family:monospace;">${s.code}</td>
           <td>${s.name || '—'}</td>
+          <td style="font-size:11px;white-space:nowrap;">${marketLabel}</td>
           <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${industry}">${industry}</td>
           <td style="text-align:right;">${peStr}</td>
           <td style="font-size:12px;line-height:1.5;max-width:320px;">
@@ -889,6 +1193,8 @@ function showHoldings() {
           <td style="text-align:right;">${(s.shares || 0).toLocaleString('zh-CN')}</td>
           <td style="text-align:right;">${(s.buy_price || 0).toFixed(2)}</td>
           <td style="text-align:right;">${sellDisplay}</td>
+          <td style="text-align:right;">${positionValueDisplay}</td>
+          <td style="text-align:right;">${positionWeightDisplay}</td>
           <td style="text-align:right;color:${pnlColor};font-weight:600;">
             ${s.pnl >= 0 ? '+' : ''}${s.pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
           </td>
@@ -901,8 +1207,11 @@ function showHoldings() {
           <td style="font-family:monospace;">${code}</td>
           <td>${h.names[i] || '—'}</td>
           <td style="color:var(--text-secondary);">—</td>
+          <td style="color:var(--text-secondary);">—</td>
           <td style="text-align:right;color:var(--text-secondary);">—</td>
           <td style="color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
+          <td style="text-align:right;color:var(--text-secondary);">—</td>
           <td style="text-align:right;color:var(--text-secondary);">—</td>
           <td style="text-align:right;color:var(--text-secondary);">—</td>
           <td style="text-align:right;color:var(--text-secondary);">—</td>
@@ -916,7 +1225,7 @@ function showHoldings() {
         <div class="period-header">
           <span class="period-date">第${idx+1}期 · ${h.date}</span>
           <span class="period-return ${retClass}">
-            周期收益: ${(h.period_return*100).toFixed(2)}%
+            策略周期收益: ${(h.period_return*100).toFixed(2)}%
           </span>
           <span style="font-size:13px;color:var(--text-secondary);">
             持仓 ${h.stock_count || h.count || stocks.length} 只 · 本金 ¥${h.capital.toLocaleString('zh-CN')}
@@ -925,15 +1234,19 @@ function showHoldings() {
             盈亏 ¥${h.period_pnl >= 0 ? '+' : ''}${h.period_pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
           </span>
         </div>
+        ${benchmarkHtml ? `<div class="holding-benchmark-row">${benchmarkHtml}</div>` : ''}
         <table class="holding-table">
           <tr>
             <th>#</th><th>股票代码</th><th>股票名称</th>
+            <th>市场/板块</th>
             <th>细分行业</th>
             <th style="text-align:right;">PE</th>
             <th>选股原因</th>
             <th style="text-align:right;">持仓数量</th>
             <th style="text-align:right;">成本价</th>
             <th style="text-align:right;">最新价</th>
+            <th style="text-align:right;">持股总市值</th>
+            <th style="text-align:right;">仓位占比</th>
             <th style="text-align:right;">持股盈亏</th>
           </tr>
           ${stockRows}
@@ -968,6 +1281,16 @@ function renderFactorPanel() {
     return '过滤';
   };
 
+  const combinationMethodLabel = (method) => {
+    if (method === 'single_factor') return '单因子直接排序';
+    if (method === 'weighted_rank_sum') return '多因子排名加权求和';
+    if (method === 'multiplicative_rank_tilt') return '主因子排名 × 信号倾斜';
+    if (method === 'zscore_weighted_sum') return 'Z-score 标准化后线性加权';
+    if (method === 'weighted_vote_then_size_tiebreak') return '多窗口投票后再由小市值打破并列';
+    if (method === 'custom') return '自定义组合';
+    return method || '未声明';
+  };
+
   const parameters = factorConfig.parameters || [];
   if (parameters.length > 0) {
     html += parameters.map(p => `
@@ -991,17 +1314,24 @@ function renderFactorPanel() {
   if (factorConfig.ranking_factor) {
     const rf = factorConfig.ranking_factor;
     html += `
-      <div class="ranking-box">
-        <div class="factor-name">排名因子: ${rf.name}</div>
+      <div class="ranking-box" style="grid-column:1 / -1;">
+        <div class="factor-name">策略逻辑说明: ${rf.name}</div>
         <div class="factor-desc">${rf.direction}: ${rf.description}</div>
-        ${ranking.formula ? `<div style="margin-top:8px;font-size:12px;"><b>排序公式:</b> ${ranking.formula}</div>` : ''}
-        ${ranking.normalization_method ? `<div style="margin-top:6px;font-size:12px;"><b>标准化:</b> ${ranking.normalization_method}</div>` : ''}
+        ${ranking.formula ? `<div style="margin-top:8px;font-size:12px;"><b>核心公式:</b> ${ranking.formula}</div>` : ''}
+        ${ranking.combination_method ? `<div style="margin-top:6px;font-size:12px;"><b>组合方式:</b> ${combinationMethodLabel(ranking.combination_method)}</div>` : ''}
+        ${ranking.normalization_method ? `<div style="margin-top:6px;font-size:12px;"><b>标准化方式:</b> ${ranking.normalization_method}</div>` : ''}
         ${rf.weight_details ? `
           <div style="margin-top:8px; font-size:12px;">
             ${Object.entries(rf.weight_details).map(([k,v]) =>
               `<span style="margin-right:12px;">${k}: <b>${(v*100).toFixed(1)}%</b></span>`
             ).join('')}
           </div>` : ''}
+        <div style="margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px;font-size:12px;line-height:1.7;">
+          <div><b>Step 1.</b> 先按过滤条件筛掉不满足要求的股票。</div>
+          <div><b>Step 2.</b> 对参与排序的输入数据按策略要求做标准化 / 排名转换。</div>
+          <div><b>Step 3.</b> 按上面的公式计算最终排序因子。</div>
+          <div><b>Step 4.</b> 根据“${rf.direction || '既定方向'}”选出最终持仓。</div>
+        </div>
       </div>`;
   }
 
@@ -1024,16 +1354,19 @@ function renderFactorPanel() {
   if (components.length > 0) {
     html += `
       <div class="factor-subsection" style="grid-column: 1 / -1;">
-        <h4>排名因子与权重</h4>
+        <h4>排序输入项与数据公式</h4>
         <div class="factor-list">
-          ${components.map(item => `
+          ${components.map((item, idx) => `
             <div class="factor-list-item">
-              <div class="title">${item.label}</div>
+              <div class="title">Step ${idx + 1}. ${item.label}</div>
               <div class="meta">
                 ${item.role || '因子'} · ${item.orientation || '—'} · ${item.transformation || '—'}
-                ${item.weight != null ? ` · 权重/作用 ${(item.weight * 100).toFixed(1)}%` : ''}
+                ${typeof item.weight === 'number' ? ` · 权重/作用 ${(item.weight * 100).toFixed(1)}%` : (item.weight ? ` · 权重/作用 ${item.weight}` : '')}
               </div>
-              <div class="desc">${item.notes || ''}${item.source_column ? `（来源列: ${item.source_column}）` : ''}</div>
+              <div class="desc">
+                ${item.source_column ? `<div><b>来源列:</b> ${item.source_column}</div>` : ''}
+                ${item.notes ? `<div><b>说明:</b> ${item.notes}</div>` : ''}
+              </div>
             </div>`).join('')}
         </div>
       </div>`;
@@ -1044,7 +1377,51 @@ function renderFactorPanel() {
 
 function updateSliderValue(slider) {
   const val = document.getElementById('val-' + slider.dataset.key);
-  if (val) val.textContent = slider.value;
+  const unit = factorConfig?.parameters?.find(p => p.key === slider.dataset.key)?.unit || '';
+  if (val) val.textContent = slider.value + unit;
+}
+
+function renderFactorOverview() {
+  const body = document.getElementById('factor-overview-body');
+  const summary = document.getElementById('factor-overview-summary');
+  const profileSummary = document.getElementById('profile-summary');
+  if (!body || !summary || !factorOverview) return;
+
+  const items = factorOverview.items || [];
+  const activeNames = factorOverview.active_factor_names || [];
+  const profiles = factorOverview.profile_summary || [];
+  summary.innerHTML = [
+    `<span class="overview-chip active">当前策略：${factorOverview.strategy_name || '—'}</span>`,
+    `<span class="overview-chip">高亮因子数：${activeNames.length}</span>`,
+    ...activeNames.map(name => `<span class="overview-chip active">${name}</span>`),
+  ].join('');
+
+  if (profileSummary) {
+    profileSummary.innerHTML = profiles.map(item => `
+      <div class="profile-card">
+        <div class="title">${item.label || item.window}</div>
+        <div class="meta">
+          <div>训练区间: ${item.window_start || '—'} → ${item.window_end || '—'}</div>
+          <div>最优候选: <b>${item.candidate_name || '—'}</b> · 综合评分 ${Number(item.score || 0).toFixed(3)}</div>
+          <div>评分拆解: overall ${Number(item.overall_score || 0).toFixed(3)} / recent ${Number(item.recent_score || 0).toFixed(3)}</div>
+          <div>参数: val&lt;${item.params?.val_pct_cutoff ?? '—'} / bias&lt;${item.params?.bias_pct ?? '—'} / bull_tp=${item.params?.bull_tp ?? '—'} / bear_tp=${item.params?.bear_tp ?? '—'}</div>
+          <div>持仓: bull_n=${item.params?.bull_n ?? '—'} / bear_n=${item.params?.bear_n ?? '—'} · 样本 ${item.months || 0} 月</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  body.innerHTML = items.map(item => `
+    <tr class="${item.active ? 'active-row' : ''}">
+      <td><b>${item.name}</b><div class="muted-small">${item.category || ''}</div></td>
+      <td>${item.core_fields}</td>
+      <td>${item.sort_direction}</td>
+      <td>${item.long_short}</td>
+      <td>${item.double_sort}</td>
+      <td>${item.book_recommended}</td>
+      <td><span class="factor-badge ${item.active ? 'active' : ''}">${item.active ? '当前使用' : '未使用'}</span></td>
+    </tr>
+  `).join('');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1152,7 +1529,11 @@ function renderCapitalSummary() {
 function resetAll() {
   document.getElementById('start-date').value = '';
   document.getElementById('end-date').value = '';
-  document.getElementById('strategy-select').value = 'original';
+  clearQuickPeriodSelection();
+  if (strategyList.length > 0) {
+    document.getElementById('strategy-select').value = strategyList[0].id;
+  }
+  document.getElementById('benchmark-select').value = 'csi1000';
   onStrategyChange().then(() => {
     document.querySelectorAll('.factor-slider').forEach(s => {
       const cp = factorConfig?.parameters?.find(p => p.key === s.dataset.key);
@@ -1162,7 +1543,13 @@ function resetAll() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => {
+  const startInput = document.getElementById('start-date');
+  const endInput = document.getElementById('end-date');
+  if (startInput) startInput.addEventListener('change', clearQuickPeriodSelection);
+  if (endInput) endInput.addEventListener('change', clearQuickPeriodSelection);
+  init();
+});
 </script>
 
 </body>

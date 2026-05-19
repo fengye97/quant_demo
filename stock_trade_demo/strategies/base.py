@@ -54,6 +54,9 @@ class BaseStrategy:
         self.bull_n = bull_n
         self.bear_n = bear_n
         self.initial_capital = initial_capital
+        self.require_positive_pe = False
+        self.require_positive_net_assets = False
+        self.require_positive_profit = False
 
     def get_display_name(self):
         return self.display_name or self.__class__.__name__
@@ -65,6 +68,9 @@ class BaseStrategy:
         return []
 
     def get_filter_descriptions(self):
+        return []
+
+    def get_factor_overview_tags(self):
         return []
 
     def get_ranking_metadata(self):
@@ -136,6 +142,34 @@ class BaseStrategy:
             'note': note,
         }
 
+    def get_quality_filter_descriptions(self):
+        descriptions = []
+        if self.require_positive_pe:
+            descriptions.append({
+                'name': '正 PE 过滤',
+                'description': '要求市盈率为正，排除 PE<=0 的公司。',
+            })
+        if self.require_positive_profit:
+            descriptions.append({
+                'name': '正利润过滤',
+                'description': '要求归母净利润_ttm 为正，排除亏损公司。',
+            })
+        if self.require_positive_net_assets:
+            descriptions.append({
+                'name': '正净资产过滤',
+                'description': '要求净资产为正，排除资不抵债公司。',
+            })
+        return descriptions
+
+    def apply_quality_filters(self, df):
+        if self.require_positive_pe and '市盈率倒数' in df.columns:
+            df = df[df['市盈率倒数'] > 0]
+        if self.require_positive_profit and '归母净利润_ttm' in df.columns:
+            df = df[df['归母净利润_ttm'] > 0]
+        if self.require_positive_net_assets and '净资产' in df.columns:
+            df = df[df['净资产'] > 0]
+        return df
+
     def build_selection_reason(self, row, rank, total):
         ranking = self.get_ranking_metadata()
         summary = f"按{ranking.get('name', '主排序因子')}入选，{self._format_rank(rank, total)}"
@@ -183,6 +217,19 @@ class BaseStrategy:
 
     def rank_stocks(self, df):
         raise NotImplementedError
+
+    def build_position_weights(self, selected_df):
+        if selected_df is None or len(selected_df) == 0:
+            return []
+        if '排名' in selected_df.columns:
+            rank_values = pd.to_numeric(selected_df['排名'], errors='coerce').fillna(len(selected_df) + 1)
+            scores = (len(selected_df) + 1) - rank_values
+            scores = scores.clip(lower=1.0)
+            total_score = float(scores.sum())
+            if total_score > 0:
+                return [round(float(v / total_score), 6) for v in scores]
+        equal_weight = 1.0 / len(selected_df)
+        return [round(float(equal_weight), 6) for _ in range(len(selected_df))]
 
     def run(self, df):
         df = df.copy()

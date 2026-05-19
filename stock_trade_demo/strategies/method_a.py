@@ -65,6 +65,9 @@ class MethodAStrategy(BaseStrategy):
         self.vol_pct = vol_pct
         self.chan_tilt = chan_tilt
         self.factor_path = factor_path
+        self.require_positive_pe = True
+        self.require_positive_net_assets = True
+        self.require_positive_profit = True
 
     def get_parameter_definitions(self):
         return [
@@ -84,12 +87,15 @@ class MethodAStrategy(BaseStrategy):
         ]
 
     def get_filter_descriptions(self):
-        return [
+        return self.get_quality_filter_descriptions() + [
             {'name': '行业估值过滤', 'description': '沿用原版行业估值过滤。'},
             {'name': 'bias_20 过滤', 'description': '剔除短期偏离均线过大的股票。'},
             {'name': '成交额波动过滤', 'description': '剔除成交额波动异常股票。'},
             {'name': 'Method A 强卖点排除', 'description': '顶背驰确认 + 中枢位置偏上 + 卖点多于买点时排除。'},
         ]
+
+    def get_factor_overview_tags(self):
+        return ['规模因子', '缠论背驰因子', '缠论中枢位置因子', '缠论分型因子', '缠论笔强度因子', '缠论买卖点信号因子']
 
     def get_ranking_metadata(self):
         return {
@@ -255,6 +261,9 @@ class MethodAStrategy(BaseStrategy):
         相比 v1.1 的三重确认（中枢上方+顶背驰+顶分型），
         v2.0 的条件略有不同因为在日线流水线中买卖点比简单分型更精确。
         """
+        # Step 0: 经营质量底线过滤
+        df = self.apply_quality_filters(df)
+
         # Step 1: 行业估值过滤
         df = df[df['val_pct'] < self.val_pct_cutoff]
 

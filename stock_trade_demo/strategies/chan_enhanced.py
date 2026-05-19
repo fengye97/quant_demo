@@ -46,6 +46,9 @@ class ChanEnhancedStrategy(BaseStrategy):
         self.bias_pct = bias_pct
         self.vol_pct = vol_pct
         self.chan_tilt = chan_tilt
+        self.require_positive_pe = True
+        self.require_positive_net_assets = True
+        self.require_positive_profit = True
 
     def get_parameter_definitions(self):
         return [
@@ -65,7 +68,7 @@ class ChanEnhancedStrategy(BaseStrategy):
         ]
 
     def get_filter_descriptions(self):
-        return [
+        return self.get_quality_filter_descriptions() + [
             {'name': '行业估值过滤', 'description': '沿用原版行业估值过滤，先避开相对高估行业。'},
             {'name': 'bias_20 过滤', 'description': '剔除短期偏离20日均线过大的股票。'},
             {'name': '成交额波动过滤', 'description': '剔除成交额波动异常股票。'},
@@ -177,6 +180,9 @@ class ChanEnhancedStrategy(BaseStrategy):
           三重确认后排除。在月线数据中出现极少（<1%），排除成本极低。
           缠论理论依据：此三重信号共振时是缠论中最明确的离场/不买入信号。
         """
+        # Step 0: 经营质量底线过滤
+        df = self.apply_quality_filters(df)
+
         # Step 1: 行业估值过滤（同原版）
         df = df[df['val_pct'] < self.val_pct_cutoff]
 
