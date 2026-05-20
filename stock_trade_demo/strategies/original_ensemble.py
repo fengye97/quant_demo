@@ -12,6 +12,7 @@ OriginalEnsembleStrategy — 多时间窗口投票版原策略。
 """
 
 import math
+from ast import literal_eval
 from copy import deepcopy
 
 import numpy as np
@@ -20,6 +21,7 @@ import pandas as pd
 from backtest import select_and_backtest
 from index_data import build_index_panel
 from strategies.original import OriginalStrategy
+from timing.strategies import ChiNextTimingStrategy, Star50TimingStrategy
 
 PROFILE_WINDOWS = {
     '3y': 3,
@@ -125,6 +127,7 @@ CANDIDATE_LIBRARY = [
 _PROFILE_CACHE = {}
 _INDEX_PANEL_CACHE = None
 _BOARD_STRENGTH_CACHE = {}
+_TIMING_SIGNAL_CACHE = {}
 
 
 class OriginalEnsembleStrategy(OriginalStrategy):
@@ -135,7 +138,9 @@ class OriginalEnsembleStrategy(OriginalStrategy):
     def __init__(self, weight_3y=0.5, weight_5y=0.3, weight_full=0.2,
                  vote_top_k=12, profile_end_date='2026-03-31',
                  board_tilt_strength=0.4, board_recent_weight=0.65,
-                 board_short_window=20, board_long_window=60, **kwargs):
+                 board_short_window=20, board_long_window=60,
+                 growth_timing_mode='off', growth_hold_days=4, growth_top_n=2,
+                 growth_board_scope='growth', **kwargs):
         super().__init__(**kwargs)
         self.weight_3y = weight_3y
         self.weight_5y = weight_5y
@@ -146,6 +151,10 @@ class OriginalEnsembleStrategy(OriginalStrategy):
         self.board_recent_weight = float(board_recent_weight)
         self.board_short_window = int(board_short_window)
         self.board_long_window = int(board_long_window)
+        self.growth_timing_mode = str(growth_timing_mode or 'off')
+        self.growth_hold_days = max(int(growth_hold_days), 1)
+        self.growth_top_n = max(int(growth_top_n), 1)
+        self.growth_board_scope = str(growth_board_scope or 'growth')
         self._profiles = None
         self._profile_summary = []
 
@@ -171,6 +180,14 @@ class OriginalEnsembleStrategy(OriginalStrategy):
              'description': '根据创业板/科创板/主板相对强弱，对最终投票结果做轻量倾斜；默认保持保守，避免压过主投票逻辑。',
              'default': self.board_tilt_strength, 'min': 0.0, 'max': 3.0, 'step': 0.1,
              'unit': '', 'type': 'weight'},
+            {'key': 'growth_hold_days', 'label': '成长短持有天数',
+             'description': '当成长 timing gate 触发时，对成长强势仓位只持有前若干个交易日。',
+             'default': self.growth_hold_days, 'min': 2, 'max': 10, 'step': 1,
+             'unit': '日', 'type': 'timing'},
+            {'key': 'growth_top_n', 'label': '成长保留只数',
+             'description': '当成长 timing gate 触发时，仅保留前若干只成长板块股票。',
+             'default': self.growth_top_n, 'min': 1, 'max': 6, 'step': 1,
+             'unit': '只', 'type': 'timing'},
         ]
 
     def get_filter_descriptions(self):
@@ -387,6 +404,7 @@ class OriginalEnsembleStrategy(OriginalStrategy):
             'vote_score_full': 'full',
         }).fillna('full')
         merged['因子'] = merged['vote_size_rank'] / (1.0 + merged['vote_total_score'] + merged['board_tilt_score'])
+        merged = self._apply_growth_timing_overlay(merged)
         merged.attrs['strategy_meta'] = {
             'profile_summary': self._profile_summary,
         }
@@ -402,6 +420,68 @@ class OriginalEnsembleStrategy(OriginalStrategy):
         if total <= 0:
             return {'3y': 0.5, '5y': 0.3, 'full': 0.2}
         return {k: v / total for k, v in weights.items()}
+
+    def _apply_growth_timing_overlay(self, df):
+        if self.growth_timing_mode != 'both_signals':
+            return df
+        if len(df) == 0:
+            return df
+
+        signal_lookup = self._build_growth_timing_lookup(df['交易日期'])
+        ranked = df.copy()
+        ranked['growth_timing_on'] = ranked['交易日期'].map(
+            lambda d: signal_lookup.get(pd.to_datetime(d).strftime('%Y-%m-%d'), False)
+        )
+        ranked['base_rank'] = ranked.groupby('交易日期')['因子'].rank(ascending=True, method='first')
+
+        def trim_returns(x):
+            if isinstance(x, list):
+                return x[:self.growth_hold_days]
+            if isinstance(x, str):
+                try:
+                    vals = literal_eval(x)
+                except (ValueError, SyntaxError):
+                    return []
+                return vals[:self.growth_hold_days] if isinstance(vals, list) else []
+            return []
+
+        frames = []
+        for _, grp in ranked.groupby('交易日期', sort=False):
+            current = grp.copy()
+            if bool(current['growth_timing_on'].iloc[0]):
+                growth = current[current['board_key'].isin(['chinext', 'star50'])].copy()
+                growth = growth[growth['base_rank'] <= self.growth_top_n].copy()
+                if len(growth) > 0:
+                    growth['下周期每天涨跌幅'] = growth['下周期每天涨跌幅'].apply(trim_returns)
+                    current = growth
+            frames.append(current)
+
+        return pd.concat(frames, ignore_index=True) if frames else ranked
+
+    def _build_growth_timing_lookup(self, trade_dates):
+        trade_dates = pd.to_datetime(pd.Series(trade_dates).dropna().unique())
+        if len(trade_dates) == 0:
+            return {}
+        max_trade_date = pd.to_datetime(max(trade_dates)).strftime('%Y-%m-%d')
+        cache_key = ('growth_timing', max_trade_date)
+        if cache_key in _TIMING_SIGNAL_CACHE:
+            return deepcopy(_TIMING_SIGNAL_CACHE[cache_key])
+
+        panel = self._get_index_panel()
+        panel = panel[panel['交易日期'] <= pd.to_datetime(max_trade_date)].copy()
+        if len(panel) == 0:
+            return {}
+
+        chinext = ChiNextTimingStrategy().run(panel)
+        star50 = Star50TimingStrategy().run(panel)
+        chinext_map = dict(zip(pd.to_datetime(chinext['交易日期']).dt.strftime('%Y-%m-%d'), chinext['position']))
+        star50_map = dict(zip(pd.to_datetime(star50['交易日期']).dt.strftime('%Y-%m-%d'), star50['position']))
+        lookup = {}
+        for date in panel['交易日期']:
+            key = pd.to_datetime(date).strftime('%Y-%m-%d')
+            lookup[key] = bool(chinext_map.get(key, 0) == 1 and star50_map.get(key, 0) == 1)
+        _TIMING_SIGNAL_CACHE[cache_key] = deepcopy(lookup)
+        return lookup
 
     def _infer_board_key(self, code):
         digits = ''.join(ch for ch in str(code or '') if ch.isdigit())
@@ -555,7 +635,7 @@ class OriginalEnsembleStrategy(OriginalStrategy):
     def _select_best_profile(self, train_df, window_key):
         fallback = {
             'candidate_name': 'baseline',
-            'params': deepcopy(CANDIDATE_LIBRARY[0]),
+            'params': deepcopy({k: v for k, v in CANDIDATE_LIBRARY[0].items() if k != 'name'}),
             'score': -1e9,
             'overall_score': -1e9,
             'recent_score': -1e9,

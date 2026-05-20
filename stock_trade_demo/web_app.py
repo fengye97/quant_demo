@@ -966,7 +966,7 @@ def timing_page():
 # 各策略默认参数值（用于缓存命中判断，值对应前端 slider 默认值）
 _CACHE_DEFAULTS = {
     'original': {'val_pct_cutoff': 0.68, 'bias_pct': 0.52, 'vol_pct': 0.78},
-    'original_ensemble': {'weight_3y': 0.5, 'weight_5y': 0.3, 'weight_full': 0.2, 'vote_top_k': 12, 'board_tilt_strength': 0.4},
+    'original_ensemble': {'weight_3y': 0.5, 'weight_5y': 0.3, 'weight_full': 0.2, 'vote_top_k': 12, 'board_tilt_strength': 0.4, 'growth_hold_days': 4, 'growth_top_n': 2},
     'chan_enhanced': {'val_pct_cutoff': 0.68, 'bias_pct': 0.52, 'vol_pct': 0.78, 'chan_tilt': 0.03},
     'chan_only': {'chan_weight': 0.70},
     'method_a': {'val_pct_cutoff': 0.68, 'bias_pct': 0.52, 'vol_pct': 0.78, 'chan_tilt': 0.05},
@@ -1017,10 +1017,14 @@ def api_backtest():
                 if val is not None:
                     params[key] = val
 
-            # select_stock_num: 整数参数
-            ssn = request.args.get('select_stock_num', type=int)
-            if ssn is not None:
-                params['select_stock_num'] = ssn
+            growth_timing_mode = request.args.get('growth_timing_mode')
+            if growth_timing_mode:
+                params['growth_timing_mode'] = growth_timing_mode
+
+            for key in ['select_stock_num', 'growth_hold_days', 'growth_top_n']:
+                val = request.args.get(key, type=int)
+                if val is not None:
+                    params[key] = val
 
             # min_market_cap / min_turnover：前端以"亿"为单位，转换为元
             min_market_cap_raw = request.args.get('min_market_cap', type=float)
@@ -1131,12 +1135,21 @@ def api_timing_params():
 
 @app.route('/api/timing/signals')
 def api_timing_signals():
-    init_timing_cache()
     payload = []
     for strategy_id, strategy_cls in TIMING_STRATEGY_MAP.items():
         strategy = strategy_cls()
         result = TIMING_CACHE.get(strategy_id)
         if result is None or len(result) == 0:
+            payload.append({
+                'id': strategy_id,
+                'name': strategy.get_display_name(),
+                'index_name': strategy.get_index_name(),
+                'date': None,
+                'action': None,
+                'position': 0,
+                'reason_summary': '加载中',
+                'nav': None,
+            })
             continue
         latest = result.iloc[-1]
         payload.append({

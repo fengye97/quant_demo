@@ -517,6 +517,7 @@ let factorOverview = null;
 let strategyList = [];
 let dataInfo = null;  // { data_min_date, data_max_date }
 let selectedQuickPeriod = null;
+let backtestRequestSeq = 0;
 
 function applyChartOption(chartId, option) {
   const chart = charts[chartId];
@@ -557,7 +558,7 @@ async function init() {
   await fetchDataInfo();
   await loadStrategyList();
   await onStrategyChange();
-  runBacktest();
+  await runBacktest();
 }
 
 async function loadStrategyList() {
@@ -628,6 +629,7 @@ function quickPeriod(period) {
 }
 
 async function runBacktest() {
+  const requestId = ++backtestRequestSeq;
   document.getElementById('loading').classList.remove('hidden');
   document.getElementById('error-banner').classList.add('hidden');
 
@@ -646,13 +648,18 @@ async function runBacktest() {
   try {
     const resp = await fetch(`/api/backtest?${params}`);
     if (!resp.ok) { const err = await resp.json(); throw new Error(err.error); }
-    backtestData = await resp.json();
+    const payload = await resp.json();
+    if (requestId !== backtestRequestSeq) return;
+    backtestData = payload;
     renderAll();
   } catch(e) {
+    if (requestId !== backtestRequestSeq) return;
     document.getElementById('error-banner').textContent = `回测失败: ${e.message}`;
     document.getElementById('error-banner').classList.remove('hidden');
   } finally {
-    document.getElementById('loading').classList.add('hidden');
+    if (requestId === backtestRequestSeq) {
+      document.getElementById('loading').classList.add('hidden');
+    }
   }
 }
 

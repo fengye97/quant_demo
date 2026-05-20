@@ -117,11 +117,26 @@ def _compute_benchmark_curves(result_df, index_returns_map):
     return curves
 
 
+def _compress_curve_points(curve, max_points=None):
+    if not max_points or len(curve) <= max_points:
+        return curve
+    if max_points <= 2:
+        return [curve[0], curve[-1]]
+    last_index = len(curve) - 1
+    indexes = np.linspace(0, last_index, num=max_points, dtype=int)
+    unique_indexes = sorted(set(int(idx) for idx in indexes))
+    if unique_indexes[-1] != last_index:
+        unique_indexes.append(last_index)
+    return [curve[idx] for idx in unique_indexes]
+
+
 def timing_result_to_json(result_df, metrics, benchmark_meta=None, benchmark_curve=None, benchmark_curves=None, compact=False):
     equity_curve = [
         {'date': pd.to_datetime(r['交易日期']).strftime('%Y-%m-%d'), 'value': round(float(r['累积净值']), 4), 'return': round(float(r['strategy_return']), 6)}
         for _, r in result_df.iterrows()
     ]
+    if compact:
+        equity_curve = _compress_curve_points(equity_curve, max_points=480)
     daily_equity_curve = list(equity_curve) if not compact else []
 
     cum = result_df['累积净值'].values
@@ -168,6 +183,10 @@ def timing_result_to_json(result_df, metrics, benchmark_meta=None, benchmark_cur
     def g(key):
         return metrics.get(key, 'N/A')
 
+    selected_benchmark_curve = benchmark_curve or []
+    if compact:
+        selected_benchmark_curve = _compress_curve_points(selected_benchmark_curve, max_points=480)
+
     return {
         'equity_curve': equity_curve,
         'daily_equity_curve': daily_equity_curve,
@@ -211,8 +230,8 @@ def timing_result_to_json(result_df, metrics, benchmark_meta=None, benchmark_cur
         },
         'indicator_snapshots': snapshot_fields,
         'active_benchmark': benchmark_meta,
-        'benchmark_curve': benchmark_curve or [],
-        'benchmark_curves': benchmark_curves or [],
+        'benchmark_curve': selected_benchmark_curve,
+        'benchmark_curves': [] if compact else (benchmark_curves or []),
         'fee_info': {
             'buy_cost': result_df.attrs.get('buy_cost', 0.001),
             'sell_cost': result_df.attrs.get('sell_cost', 0.001),

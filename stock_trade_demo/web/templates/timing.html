@@ -153,6 +153,16 @@
     let factorConfig = null;
     let backtestData = null;
     let summaryData = [];
+    let backtestRequestSeq = 0;
+
+    function applyChartOption(chart, option) {
+      if (!chart) return;
+      requestAnimationFrame(() => {
+        chart.resize();
+        chart.setOption(option, true);
+        chart.resize();
+      });
+    }
 
     function formatSignal(action, position) {
       const isOn = Number(position) === 1;
@@ -186,8 +196,8 @@
         <div class="summary-card">
           <h3>${item.index_name}</h3>
           <div style="margin-bottom:10px;">${formatSignal(item.action, item.position)}</div>
-          <div class="muted" style="margin-bottom:6px;">最近信号日期: ${item.date}</div>
-          <div class="muted" style="margin-bottom:6px;">当前净值: <b>${Number(item.nav || 0).toFixed(4)}</b></div>
+          <div class="muted" style="margin-bottom:6px;">最近信号日期: ${item.date || '—'}</div>
+          <div class="muted" style="margin-bottom:6px;">当前净值: <b>${item.nav == null ? '—' : Number(item.nav).toFixed(4)}</b></div>
           <div style="font-size:14px;line-height:1.7;">${item.reason_summary || '—'}</div>
         </div>
       `).join('');
@@ -218,9 +228,10 @@
       const dom = document.getElementById('chart-main');
       if (!charts.main) charts.main = echarts.init(dom);
       const curve = backtestData?.equity_curve || [];
-      const benchmarkCurves = backtestData?.benchmark_curves || [];
-      const activeBenchmarkId = backtestData?.active_benchmark?.id;
-      const selectedBenchmark = benchmarkCurves.find(x => x.id === activeBenchmarkId) || benchmarkCurves[0];
+      const activeBenchmark = backtestData?.active_benchmark;
+      const selectedBenchmark = activeBenchmark && Array.isArray(backtestData?.benchmark_curve)
+        ? { name: activeBenchmark.name, curve: backtestData.benchmark_curve }
+        : null;
       const option = {
         tooltip: { trigger: 'axis' },
         legend: { top: 0 },
@@ -244,8 +255,7 @@
           }] : [])
         ]
       };
-      charts.main.setOption(option, true);
-      charts.main.resize();
+      applyChartOption(charts.main, option);
     }
 
     function renderSnapshots() {
@@ -319,6 +329,7 @@
     }
 
     async function runBacktest() {
+      const requestId = ++backtestRequestSeq;
       document.getElementById('loading').classList.remove('hidden');
       document.getElementById('error-banner').classList.add('hidden');
       try {
@@ -337,13 +348,18 @@
           const err = await resp.json();
           throw new Error(err.error || '请求失败');
         }
-        backtestData = await resp.json();
+        const payload = await resp.json();
+        if (requestId !== backtestRequestSeq) return;
+        backtestData = payload;
         renderAll();
       } catch (e) {
+        if (requestId !== backtestRequestSeq) return;
         document.getElementById('error-banner').textContent = `回测失败: ${e.message}`;
         document.getElementById('error-banner').classList.remove('hidden');
       } finally {
-        document.getElementById('loading').classList.add('hidden');
+        if (requestId === backtestRequestSeq) {
+          document.getElementById('loading').classList.add('hidden');
+        }
       }
     }
 
@@ -351,8 +367,8 @@
       await Promise.all([
         loadTimingInfo(),
         loadStrategyList(),
-        loadSummarySignals(),
       ]);
+      await loadSummarySignals();
       await onStrategyChange();
       window.addEventListener('resize', () => charts.main && charts.main.resize());
     }
