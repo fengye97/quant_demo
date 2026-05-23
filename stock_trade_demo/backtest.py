@@ -35,33 +35,36 @@ def compute_alpha_beta(portfolio_returns, index_returns):
     Regresses strategy period returns on aligned benchmark period returns:
         strategy_ret = alpha + beta * index_ret + epsilon
 
-    For regular full backtests, dates align naturally by month. For short custom
-    windows, we still compute attribution as long as at least 2 overlapping
-    periods exist, and annualize alpha by the observed average period length.
+    Alignment rule:
+      1. Prefer exact timestamp match (works for weekly/date-aligned series)
+      2. Fallback to (year, month) match for legacy monthly benchmark series
 
     Parameters:
         portfolio_returns: pd.Series of strategy period returns,
                            indexed by trading date.
         index_returns:     pd.Series of benchmark period returns,
-                           indexed by month-end date.
+                           indexed by period-end date.
 
     Returns:
         dict with keys: beta, alpha_period, alpha_monthly, alpha_annualized,
         tracking_error, information_ratio, up_capture, down_capture,
         r_squared, n_periods, avg_period_days. Returns {'error': ...} on failure.
     """
-    idx_lookup = {}
+    exact_lookup = {}
+    month_lookup = {}
     for idx, val in index_returns.items():
         ts = pd.to_datetime(idx)
-        idx_lookup[(ts.year, ts.month)] = float(val)
+        exact_lookup[pd.Timestamp(ts).normalize()] = float(val)
+        month_lookup[(ts.year, ts.month)] = float(val)
 
     aligned_dates = []
     x_vals = []
     y_vals = []
     for date, ret in portfolio_returns.items():
         ts = pd.to_datetime(date)
-        key = (ts.year, ts.month)
-        idx_ret = idx_lookup.get(key)
+        idx_ret = exact_lookup.get(pd.Timestamp(ts).normalize())
+        if idx_ret is None:
+            idx_ret = month_lookup.get((ts.year, ts.month))
         if idx_ret is not None:
             aligned_dates.append(ts)
             x_vals.append(idx_ret)
@@ -347,7 +350,7 @@ def parse_returns(x):
     return x if isinstance(x, list) else []
 
 
-def apply_take_profit(daily_returns, tp_pct, sell_cost):
+def apply_take_profit(daily_returns, tp_pct, sell_cost, sl_pct=None):
     """
     对单只股票的下周期日收益序列应用止盈规则。
 
@@ -355,6 +358,7 @@ def apply_take_profit(daily_returns, tp_pct, sell_cost):
       daily_returns — list[float]，每天的涨跌幅
       tp_pct        — 止盈阈值（如 0.30 = 30%）
       sell_cost     — 卖出成本率（手续费+印花税）
+      sl_pct        — 止损阈值（如 -0.20 = -20%），None 表示不启用止损
 
     返回:
       (modified_returns, triggered)
@@ -378,10 +382,13 @@ def apply_take_profit(daily_returns, tp_pct, sell_cost):
         if cumret - 1 > tp_pct:
             triggered = True
             result[-1] = result[-1] - sell_cost  # 触发日扣卖出成本
+        elif sl_pct is not None and cumret - 1 < sl_pct:
+            triggered = True
+            result[-1] = result[-1] - sell_cost
     return result, triggered
 
 
-def build_period_daily_curve(daily_lists, tp_pct, sell_cost, buy_cost):
+def build_period_daily_curve(daily_lists, tp_pct, sell_cost, buy_cost, sl_pct=None):
     """基于单股逐日收益构造单个调仓周期的组合日线。"""
     period_len = max((len(x) for x in daily_lists if isinstance(x, list)), default=0)
     if period_len == 0:
@@ -393,7 +400,7 @@ def build_period_daily_curve(daily_lists, tp_pct, sell_cost, buy_cost):
             stock_curves.append(np.ones(period_len))
             continue
 
-        modified, triggered = apply_take_profit(daily_ret, tp_pct, sell_cost)
+        modified, triggered = apply_take_profit(daily_ret, tp_pct, sell_cost, sl_pct=sl_pct)
         curve = np.cumprod(np.array(modified, dtype=float) + 1.0)
         if len(curve) > 0 and not triggered:
             curve[-1] *= (1 - sell_cost)
@@ -409,7 +416,9 @@ def select_and_backtest(df, strategy, select_stock_num=6,
                         c_rate=1.0 / 10000, t_rate=1 / 1000,
                         bull_tp=0.30, bear_tp=0.22,
                         bull_n=6, bear_n=4,
-                        initial_capital=100000):
+                        initial_capital=100000,
+                        timing_signal=None,
+                        stop_loss_pct=None):
     """
     执行选股和回测。
 
@@ -436,6 +445,16 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     """
     df = df.copy()
     sell_cost = c_rate + t_rate
+
+    _timing_series = None
+    if timing_signal is not None:
+        if isinstance(timing_signal, pd.Series):
+            _timing_series = timing_signal.sort_index()
+        elif isinstance(timing_signal, dict):
+            _timing_series = pd.Series(
+                list(timing_signal.values()),
+                index=pd.to_datetime(list(timing_signal.keys()))
+            ).sort_index()
 
     # 解析下周期涨跌幅
     df['下周期每天涨跌幅'] = df['下周期每天涨跌幅'].apply(parse_returns)
@@ -466,6 +485,19 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     capital = float(initial_capital)
 
     for date, grp in group:
+        if _timing_series is not None:
+            timing_pos = _timing_series.asof(pd.to_datetime(date))
+            if pd.isna(timing_pos):
+                timing_pos = 1.0
+            if float(timing_pos) <= 0.0:
+                period_returns.append(0.0)
+                capitals.append(capital)
+                pnls.append(0.0)
+                cum_capitals.append(capital)
+                holdings_detail.append(json.dumps([], ensure_ascii=False))
+                period_daily_curves.append([1.0])
+                continue
+
         # 根据市场状态选择止盈参数
         regime = grp['市场状态'].iloc[0]
         if regime == 'bull':
@@ -500,7 +532,7 @@ def select_and_backtest(df, strategy, select_stock_num=6,
         target_weights = [float(w) / total_weight for w in target_weights]
         capital_allocations = [capital_start * w for w in target_weights]
 
-        period_daily_curve = build_period_daily_curve(daily_lists, tp, sell_cost, c_rate)
+        period_daily_curve = build_period_daily_curve(daily_lists, tp, sell_cost, c_rate, sl_pct=stop_loss_pct)
         period_daily_curves.append(period_daily_curve)
 
         # 本期买入手续费
@@ -552,7 +584,7 @@ def select_and_backtest(df, strategy, select_stock_num=6,
                 })
                 continue
 
-            modified, triggered = apply_take_profit(daily_ret, tp, sell_cost)
+            modified, triggered = apply_take_profit(daily_ret, tp, sell_cost, sl_pct=stop_loss_pct)
             cumret = np.prod([1 + r for r in modified])
 
             # 计算卖出价（不含交易成本的毛价格）

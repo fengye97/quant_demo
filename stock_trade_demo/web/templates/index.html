@@ -279,6 +279,40 @@
     font-weight: 700;
   }
 
+  .factor-metric-legend {
+    margin-top: 14px; padding: 14px 16px;
+    background: linear-gradient(135deg, #f8f9ff, #f0f4ff);
+    border: 1px solid #d8e1ff; border-radius: 10px;
+  }
+  .factor-metric-legend .legend-title {
+    font-size: 13px; font-weight: 600; color: #4a4a8a; margin-bottom: 10px;
+  }
+  .factor-metric-legend .legend-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .factor-metric-legend .legend-block {
+    background: #fff; border-radius: 8px; padding: 10px 12px;
+    border: 1px solid #e8edf7;
+  }
+  .factor-metric-legend .legend-key {
+    font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 4px;
+  }
+  .factor-metric-legend .legend-val {
+    font-size: 12px; color: var(--text); line-height: 1.6;
+  }
+  .factor-metric-legend .legend-pos { color: #00b894; font-weight: 600; }
+  .factor-metric-legend .legend-neg { color: #d63031; font-weight: 600; }
+  .factor-metric-legend .legend-scale {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+  }
+  .factor-metric-legend .scale-item {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+  }
+  .factor-metric-legend .s-excellent { background: #d6f5f0; color: #00897b; }
+  .factor-metric-legend .s-good      { background: #fff3cd; color: #856404; }
+  .factor-metric-legend .s-weak      { background: #dfe6e9; color: #636e72; }
+  .factor-metric-legend .s-bad       { background: #fadbd8; color: #c0392b; }
   .factor-overview-table-wrap {
     overflow-x: auto;
   }
@@ -337,34 +371,86 @@
   }
 
   .profile-summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 12px;
     margin-top: 14px;
+    margin-bottom: 16px;
   }
-
+  .profile-summary-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .profile-cards-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
   .profile-card {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 14px;
+    flex: 1;
+    min-width: 200px;
+    max-width: 320px;
   }
-
-  .profile-card .title {
+  .profile-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .profile-window-badge {
     font-size: 13px;
     font-weight: 700;
-    margin-bottom: 6px;
+    color: var(--text);
   }
-
-  .profile-card .meta {
+  .profile-score-badge {
     font-size: 12px;
-    color: var(--text-secondary);
-    line-height: 1.6;
+    font-weight: 700;
   }
+  .profile-card-body { display: flex; flex-direction: column; gap: 5px; }
+  .profile-row { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .profile-key { font-size: 11px; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
+  .profile-val { font-size: 12px; color: var(--text); text-align: right; }
 
   @media (max-width: 900px) {
     .metrics-row { grid-template-columns: repeat(2, 1fr); }
   }
+
+  /* Factor comparison panel */
+  .factor-compare-panel {
+    background: var(--card-bg); border-radius: var(--radius);
+    padding: 20px; box-shadow: var(--shadow); margin-bottom: 20px;
+  }
+  .factor-compare-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; gap: 10px;
+  }
+  .factor-compare-title { font-size: 15px; font-weight: 700; }
+  .factor-compare-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .factor-compare-chart { width: 100%; height: 440px; }
+  .factor-table-wrap { overflow-x: auto; margin-top: 18px; }
+  .factor-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .factor-table th {
+    background: #f0f0f0; padding: 8px 12px; text-align: left;
+    font-weight: 600; font-size: 12px; white-space: nowrap;
+  }
+  .factor-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .factor-table tr:hover td { background: #f9f9f9; }
+  .regime-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; margin: 0 2px;
+  }
+  .regime-bull { background: #ffeaa7; color: #d68910; }
+  .regime-bear { background: #dfe6e9; color: #636e72; }
 </style>
 </head>
 <body>
@@ -372,14 +458,16 @@
 <div class="app">
   <div class="header">
     <div>
-      <h1>量化选股策略 · 可视化分析 <span style="background:#00b894;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;">v2 · 训练/测试集</span></h1>
+      <h1>量化选股策略 · 可视化分析 <span style="background:#00b894;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;">v2 · 区间回测</span></h1>
       <p class="subtitle" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <span>多窗口投票版原策略 | 训练集: ≤2026-03-31 | 测试集: >2026-03-31</span>
+        <span>多窗口投票版原策略 | 默认观察近一月 / 近一季 / 近半年，区间指标按窗口首日重置资金</span>
         <span id="data-date-badge" style="background:#6c5ce7;color:#fff;font-size:12px;padding:3px 10px;border-radius:12px;font-weight:600;white-space:nowrap;">数据更新至: ---</span>
       </p>
     </div>
     <div style="display:flex; gap:8px;">
-      <button class="btn btn-secondary" onclick="window.location.href='/timing'">指数择时页</button>
+      <button class="btn btn-secondary" onclick="window.location.href='/timing'">A股择时</button>
+      <button class="btn btn-secondary" onclick="window.location.href='/us_timing'">美股择时</button>
+      <button class="btn btn-secondary" id="update-data-btn" onclick="triggerDataUpdate()">更新数据</button>
       <button class="btn btn-secondary" onclick="resetAll()">重置参数</button>
       <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
     </div>
@@ -421,7 +509,16 @@
   </div>
 
   <div id="error-banner" class="error-banner hidden"></div>
-  <div id="loading" class="loading-overlay hidden"><div class="loading-spinner"></div></div>
+  <div id="loading" class="loading-overlay hidden">
+    <div style="text-align:center;">
+      <div class="loading-spinner" style="margin:0 auto 16px;"></div>
+      <div id="loading-status" style="font-size:14px;color:var(--text-secondary);margin-bottom:8px;">正在连接服务器...</div>
+      <div id="loading-time" style="font-size:24px;font-weight:700;color:var(--accent);">—</div>
+      <div id="loading-progress" style="margin-top:12px;width:280px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+        <div id="loading-progress-bar" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width 0.3s;"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- ============ Overview (custom date range, no split) ============ -->
   <div class="section-card hidden" id="overview-section">
@@ -439,11 +536,11 @@
     <div class="chart-box" id="chart-overview"></div>
   </div>
 
-  <!-- ============ Training Set ============ -->
+  <!-- ============ Pre-6m History ============ -->
   <div class="section-card" id="train-section">
     <div class="section-header">
       <div class="section-title">
-        训练集 <span class="section-badge badge-train">≤ 2026-03-31</span>
+        半年前历史 <span class="section-badge badge-train">历史先验</span>
       </div>
       <span style="font-size:13px;color:var(--text-secondary);" id="train-date-range"></span>
     </div>
@@ -452,11 +549,11 @@
     <div class="chart-box" id="chart-train"></div>
   </div>
 
-  <!-- ============ Test Set ============ -->
+  <!-- ============ Recent Windows ============ -->
   <div class="section-card" id="test-section">
     <div class="section-header">
       <div class="section-title">
-        测试集 <span class="section-badge badge-test">> 2026-03-31</span>
+        近端验证区间 <span class="section-badge badge-test">1m / 1q / 6m</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <span style="font-size:13px;color:var(--text-secondary);" id="test-date-range"></span>
@@ -487,15 +584,95 @@
             <th>排序方向</th>
             <th>单变量多空</th>
             <th>双重排序</th>
-            <th>是否书中主推</th>
             <th>当前策略</th>
+            <th>单因子年化</th>
+            <th>适合市场</th>
           </tr>
         </thead>
         <tbody id="factor-overview-body"></tbody>
       </table>
     </div>
     <div class="muted-small" style="margin-top:10px;">
-      当前高亮表示“当前前端保留策略实际使用/直接依赖的主因子”，未高亮项保留为后续优化候选库。
+      当前高亮表示"当前前端保留策略实际使用/直接依赖的主因子"，未高亮项保留为后续优化候选库。
+    </div>
+    <div class="factor-metric-legend">
+      <div class="legend-title">📖 指标说明</div>
+      <div class="legend-grid">
+        <div class="legend-block">
+          <div class="legend-key">单因子年化</div>
+          <div class="legend-val">仅用该因子排序选 Top-K 股票按月调仓的年化收益。<span class="legend-pos">绿色 = 正收益</span>，<span class="legend-neg">红色 = 亏损</span>。</div>
+        </div>
+        <div class="legend-block">
+          <div class="legend-key">Calmar 比率</div>
+          <div class="legend-val">年化收益 / 最大回撤的绝对值，衡量"赚多少 vs 亏多少"的性价比。
+            <div class="legend-scale">
+              <span class="scale-item s-excellent">&gt; 1.0 优秀</span>
+              <span class="scale-item s-good">0.5~1.0 一般</span>
+              <span class="scale-item s-weak">0~0.5 偏弱</span>
+              <span class="scale-item s-bad">&lt; 0 亏损</span>
+            </div>
+            <div style="margin-top:4px;font-size:11px;color:var(--text-secondary);">⚠️ 极端高 Calmar（如 &gt; 10）通常代表参与排序的样本稀疏，统计意义有限，需结合年化绝对值判断。</div>
+          </div>
+        </div>
+        <div class="legend-block">
+          <div class="legend-key">适合市场</div>
+          <div class="legend-val">基于牛市/熊市平均月收益的自动分类（鼠标悬停标签可看详细数值）：
+            <div class="legend-scale">
+              <span class="regime-chip" style="background:#d6f5f0;color:#00897b;">全天候</span>
+              <span class="regime-chip" style="background:#ffeaa7;color:#d68910;">牛市占优</span>
+              <span class="regime-chip" style="background:#dfe6e9;color:#636e72;">熊市稳健</span>
+              <span class="regime-chip" style="background:#d4edff;color:#0984e3;">双市均可</span>
+              <span class="regime-chip" style="background:#f0f0f0;color:#b2bec3;">效果偏弱</span>
+              <span class="regime-chip" style="background:#e8d5f2;color:#8e44ad;">缠论扩展</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Factor Single Backtest Comparison ============ -->
+  <div class="factor-compare-panel" id="factor-compare-panel">
+    <div class="factor-compare-header">
+      <span class="factor-compare-title">因子表现对比 <span class="section-badge" style="background:var(--purple);">单因子回测</span></span>
+      <div class="factor-compare-controls">
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);">每期选股数</label>
+        <select id="factor-topk-select" style="padding:5px 10px;border:1px solid var(--border);border-radius:7px;font-size:13px;">
+          <option value="5" selected>5只</option>
+          <option value="3">3只</option>
+          <option value="8">8只</option>
+          <option value="10">10只</option>
+        </select>
+        <button class="btn btn-primary" onclick="loadFactorBacktest(true)" style="padding:6px 16px;font-size:13px;">运行分析</button>
+        <span id="factor-loading-hint" style="font-size:12px;color:var(--text-secondary);display:none;">计算中，约需30秒…</span>
+      </div>
+    </div>
+    <div class="factor-compare-chart" id="factor-compare-chart">
+      <div id="factor-compare-placeholder" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);">
+        <div style="font-size:32px;margin-bottom:12px;">📊</div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:6px;">单因子回测对比</div>
+        <div style="font-size:12px;margin-bottom:16px;">首次加载需约30秒，后续访问秒级响应</div>
+        <div id="factor-placeholder-status" style="font-size:12px;color:var(--accent);">正在加载中...</div>
+      </div>
+    </div>
+    <div class="factor-table-wrap">
+      <table class="factor-table">
+        <thead>
+          <tr>
+            <th>因子</th>
+            <th>年化收益</th>
+            <th>最大回撤</th>
+            <th>Calmar比率</th>
+            <th>牛市均月收益</th>
+            <th>熊市均月收益</th>
+            <th>最佳适用市场</th>
+          </tr>
+        </thead>
+        <tbody id="factor-compare-body"></tbody>
+      </table>
+    </div>
+    <div class="muted-small" style="margin-top:10px;">
+      单因子选股：每期等权持有排名最靠前的N只股票，扣手续费（买万1，卖千1）。牛熊市判断同主策略。
     </div>
   </div>
 </div>
@@ -518,7 +695,6 @@ let strategyList = [];
 let dataInfo = null;  // { data_min_date, data_max_date }
 let selectedQuickPeriod = null;
 let backtestRequestSeq = 0;
-
 function applyChartOption(chartId, option) {
   const chart = charts[chartId];
   if (!chart) return;
@@ -549,16 +725,96 @@ async function fetchDataInfo() {
   } catch(e) { console.error('fetchDataInfo:', e); }
 }
 
+function showLoading(msg, pct) {
+  const overlay = document.getElementById('loading');
+  if (overlay) overlay.classList.remove('hidden');
+  if (msg) {
+    const el = document.getElementById('loading-status');
+    if (el) el.textContent = msg;
+  }
+  if (pct != null) {
+    const bar = document.getElementById('loading-progress-bar');
+    if (bar) bar.style.width = Math.min(100, Math.max(0, pct)) + '%';
+  }
+}
+
+function hideLoading() {
+  const overlay = document.getElementById('loading');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+let _loadingTimer = null;
+let _loadStartTime = 0;
+function startLoadingTimer() {
+  _loadStartTime = performance.now();
+  if (_loadingTimer) clearInterval(_loadingTimer);
+  _loadingTimer = setInterval(() => {
+    const el = document.getElementById('loading-time');
+    if (!el) { stopLoadingTimer(); return; }
+    const sec = (performance.now() - _loadStartTime) / 1000;
+    el.textContent = sec >= 60
+      ? `${Math.floor(sec / 60)}分${Math.floor(sec % 60)}秒`
+      : `${sec.toFixed(1)}秒`;
+  }, 250);
+}
+function stopLoadingTimer() {
+  if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
+}
+
 async function init() {
+  startLoadingTimer();
+
+  // Poll server loading status until data is ready
+  showLoading('正在连接服务器...', 5);
+  let serverReady = false;
+  while (!serverReady) {
+    try {
+      const resp = await fetch('/api/status');
+      const status = await resp.json();
+      if (status.stage === 'ready' || status.ready) {
+        serverReady = true;
+        showLoading('数据就绪，正在初始化...', 75);
+      } else if (status.stage === 'error') {
+        showLoading('数据加载失败: ' + status.message, 0);
+        return;
+      } else {
+        let pct = 10;
+        if (status.stage === 'stock_data') pct = 15;
+        else if (status.stage === 'index_data') pct = 30;
+        else if (status.stage === 'strategy_cache') pct = 50;
+        else if (status.stage === 'timing_cache') pct = 70;
+        showLoading(status.message || '正在加载数据...', pct);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch (e) {
+      showLoading('等待服务器启动...', 5);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  // Initialize charts
   ['chart-overview', 'chart-train', 'chart-test'].forEach(id => {
     const dom = document.getElementById(id);
     if (dom) charts[id] = echarts.init(dom);
   });
   window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+
+  showLoading('正在获取数据信息...', 80);
   await fetchDataInfo();
+
+  showLoading('正在加载策略列表...', 85);
   await loadStrategyList();
+
+  showLoading('正在加载因子配置...', 90);
   await onStrategyChange();
+
+  showLoading('正在运行回测...', 95);
   await runBacktest();
+
+  stopLoadingTimer();
+  hideLoading();
+  // Non-blocking: load single-factor backtest after main init (ensures factorOverview is set)
+  loadFactorBacktest(false);
 }
 
 async function loadStrategyList() {
@@ -630,7 +886,8 @@ function quickPeriod(period) {
 
 async function runBacktest() {
   const requestId = ++backtestRequestSeq;
-  document.getElementById('loading').classList.remove('hidden');
+  // Only show loading for user-triggered re-runs (not init)
+  if (backtestData) showLoading('正在运行回测...', null);
   document.getElementById('error-banner').classList.add('hidden');
 
   const strategy = document.getElementById('strategy-select').value;
@@ -639,7 +896,6 @@ async function runBacktest() {
   const endDate = document.getElementById('end-date').value;
 
   let params = `strategy=${strategy}&benchmark=${benchmark}`;
-  if (strategy === 'original_ensemble') params += '&growth_timing_mode=both_signals';
   if (startDate) params += `&start=${startDate}`;
   if (endDate) params += `&end=${endDate}`;
   document.querySelectorAll('.factor-slider').forEach(s => {
@@ -659,7 +915,7 @@ async function runBacktest() {
     document.getElementById('error-banner').classList.remove('hidden');
   } finally {
     if (requestId === backtestRequestSeq) {
-      document.getElementById('loading').classList.add('hidden');
+      hideLoading();
     }
   }
 }
@@ -696,33 +952,18 @@ function smartAxis(dates) {
 // Use encode so tooltip shows yValue directly, and a helper when needed.
 function _y(p) { return Array.isArray(p.value) ? p.value[1] : p.value; }
 
-// Resample monthly equity curve to quarterly/yearly
-function resampleCurve(curve, resolution) {
-  if (resolution === 'day' || resolution === 'month' || !curve || curve.length === 0) return curve;
-  const groups = {};
-  curve.forEach(d => {
-    const dt = new Date(d.date);
-    let key;
-    if (resolution === 'quarter') {
-      key = dt.getFullYear() + '-Q' + (Math.floor(dt.getMonth() / 3) + 1);
-    } else {
-      key = String(dt.getFullYear());
-    }
-    if (!groups[key]) groups[key] = { returns: [], lastDate: d.date };
-    groups[key].returns.push(d.return);
-    groups[key].lastDate = d.date;
-  });
-  let cum = 1;
-  return Object.values(groups).map(g => {
-    const periodRet = g.returns.reduce((acc, r) => acc * (1 + r), 1) - 1;
-    cum *= (1 + periodRet);
-    return { date: g.lastDate, value: parseFloat(cum.toFixed(4)), return: parseFloat(periodRet.toFixed(6)) };
-  });
+// 根据分辨率从后端预计算数据中选择对应曲线（不再在前端做金融复权计算）
+function selectCurveForResolution(monthlyCurve, dailyCurve, quarterlyCurve, yearlyCurve, resolution) {
+  if (resolution === 'day' && dailyCurve && dailyCurve.length > 0) return dailyCurve;
+  if (resolution === 'quarter' && quarterlyCurve && quarterlyCurve.length > 0) return quarterlyCurve;
+  if (resolution === 'year' && yearlyCurve && yearlyCurve.length > 0) return yearlyCurve;
+  return monthlyCurve || [];
 }
 
-function selectCurveForResolution(monthlyCurve, dailyCurve, resolution) {
-  if (resolution === 'day' && dailyCurve && dailyCurve.length > 0) return dailyCurve;
-  return monthlyCurve || [];
+function selectBenchmarkCurveForResolution(bmItem, resolution) {
+  if (resolution === 'quarter' && bmItem.curve_quarterly && bmItem.curve_quarterly.length > 0) return bmItem.curve_quarterly;
+  if (resolution === 'year' && bmItem.curve_yearly && bmItem.curve_yearly.length > 0) return bmItem.curve_yearly;
+  return bmItem.curve || [];
 }
 
 // dataZoom defaults: if >24 points, start zoomed to show ~24 most-recent points
@@ -748,25 +989,16 @@ function applyZoom(chartId, months, totalMonths) {
 // Track current resolution per chart
 const chartResolution = {};
 
-function normalizeBenchmarkCurves(primaryCurve, benchmarkCurves) {
-  if (Array.isArray(benchmarkCurves) && benchmarkCurves.length > 0) return benchmarkCurves;
-  if (primaryCurve && primaryCurve.length > 0) {
-    return [{ id: 'csi1000', name: 'CSI 1000', curve: primaryCurve }];
-  }
-  return [];
-}
-
-function buildEquityChart(containerId, curve, benchmarkCurves, yOpts, dailyCurve) {
+function buildEquityChart(containerId, curveMonthly, curveDaily, curveQuarterly, curveYearly, benchmarkCurves, yOpts) {
   const chart = charts[containerId];
   if (!chart) return;
   const res = chartResolution[containerId] || 'month';
-  const baseCurve = selectCurveForResolution(curve, dailyCurve, res);
-  if (baseCurve.length === 0) return;
-  const c = resampleCurve(baseCurve, res);
-  const benchmarks = res === 'day' ? [] : normalizeBenchmarkCurves([], benchmarkCurves).map(item => ({
+  const c = selectCurveForResolution(curveMonthly, curveDaily, curveQuarterly, curveYearly, res);
+  if (!c || c.length === 0) return;
+  const benchmarks = res === 'day' ? [] : (benchmarkCurves || []).map(item => ({
     ...item,
-    curve: resampleCurve(item.curve || [], res),
-  })).filter(item => item.curve.length > 0);
+    curve: selectBenchmarkCurveForResolution(item, res),
+  })).filter(item => item.curve && item.curve.length > 0);
   const dates = c.map(d => d.date);
 
   let fmt;
@@ -839,7 +1071,7 @@ function renderResolutionButtons(containerId, chartId, curve) {
   ];
   const active = chartResolution[chartId] || 'month';
   el.innerHTML = presets.map(p =>
-    `<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;${p.res === active ? 'background:var(--accent);color:#fff;' : ''}" onclick="chartResolution['${chartId}']='${p.res}';runBacktest()">${p.label}</button>`
+    `<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;${p.res === active ? 'background:var(--accent);color:#fff;' : ''}" onclick="chartResolution['${chartId}']='${p.res}';renderAll()">${p.label}</button>`
   ).join('');
 }
 
@@ -847,10 +1079,9 @@ function renderResolutionButtons(containerId, chartId, curve) {
 // ═══════════════════════════════════════════════════════════════
 function renderOverview() {
   const sec = document.getElementById('overview-section');
-  const split = backtestData.split;
+  const hasIntervalWindows = !!backtestData.interval_windows?.pre_6m_history;
 
-  // Only show overview when no split (custom date range)
-  if (split && split.train) { sec.classList.add('hidden'); return; }
+  if (hasIntervalWindows) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
 
   document.getElementById('overview-date-range').textContent =
@@ -873,18 +1104,20 @@ function renderOverview() {
     btn.classList.add('hidden');
   }
 
-  // Chart
-  const curve = backtestData.equity_curve || [];
-  const dailyCurve = backtestData.daily_equity_curve || [];
-  const benchmarkCurves = normalizeBenchmarkCurves(backtestData.benchmark_curve || [], backtestData.benchmark_curves || []);
-  buildEquityChart('chart-overview', curve, benchmarkCurves, undefined, dailyCurve);
-  renderResolutionButtons('overview-zoom-btns', 'chart-overview', curve);
+  // Chart — 所有分辨率曲线均由后端预计算，前端仅选择
+  const curveMonthly = backtestData.equity_curve || [];
+  const curveDaily = backtestData.daily_equity_curve || [];
+  const curveQuarterly = backtestData.equity_curve_quarterly || [];
+  const curveYearly = backtestData.equity_curve_yearly || [];
+  buildEquityChart('chart-overview', curveMonthly, curveDaily, curveQuarterly, curveYearly,
+                   backtestData.benchmark_curves || [], undefined);
+  renderResolutionButtons('overview-zoom-btns', 'chart-overview', curveMonthly);
 
-  // 跑赢/跑输大盘指标
-  updateOverviewBenchmark(benchmarkCurves, curve);
+  // 跑赢/跑输大盘指标 — 使用后端预计算的超额收益
+  updateOverviewBenchmark(backtestData.benchmark_curves || []);
 }
 
-function updateOverviewBenchmark(benchmarkCurves, strategyCurve) {
+function updateOverviewBenchmark(benchmarkCurves) {
   const activeBenchmarkId = backtestData?.active_benchmark?.id;
   let el = document.getElementById('overview-benchmark');
   if (!el) {
@@ -895,16 +1128,17 @@ function updateOverviewBenchmark(benchmarkCurves, strategyCurve) {
     el.style.cssText = 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;';
     metricsRow.parentNode.insertBefore(el, metricsRow.nextSibling);
   }
-  if (!benchmarkCurves || benchmarkCurves.length === 0 || strategyCurve.length === 0) {
+  if (!benchmarkCurves || benchmarkCurves.length === 0) {
     el.innerHTML = '<span style="color:var(--text-secondary);">暂无基准数据</span>';
     return;
   }
-  const stratFinal = strategyCurve[strategyCurve.length - 1].value;
+  const stratFinal = (backtestData.equity_curve || []).length > 0
+    ? backtestData.equity_curve[backtestData.equity_curve.length - 1].value : 1;
   el.innerHTML = benchmarkCurves.map(item => {
     const curve = item.curve || [];
     if (curve.length === 0) return '';
     const bmFinal = curve[curve.length - 1].value;
-    const excess = (stratFinal / bmFinal - 1) * 100;
+    const excess = item.excess_return_pct != null ? item.excess_return_pct : 0;
     const color = excess >= 0 ? 'var(--green)' : 'var(--red)';
     const arrow = excess >= 0 ? '▲' : '▼';
     const activeBadge = item.id === activeBenchmarkId ? '<span style="margin-left:6px;background:var(--accent);color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;">当前归因基准</span>' : '';
@@ -921,42 +1155,40 @@ function updateOverviewBenchmark(benchmarkCurves, strategyCurve) {
 // Render: Training Set
 // ═══════════════════════════════════════════════════════════════
 function renderTrainSection() {
-  const split = backtestData.split;
   const trainSec = document.getElementById('train-section');
-  if (!split || !split.train) { trainSec.classList.add('hidden'); return; }
+  const t = backtestData.interval_windows?.pre_6m_history;
+  if (!t || !t.metrics || !t.date_range?.start) { trainSec.classList.add('hidden'); return; }
   trainSec.classList.remove('hidden');
 
-  const t = split.train;
   renderMetricsRow('train-metrics', t);
   document.getElementById('train-date-range').textContent =
     `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月`;
 
-  // Chart
-  const curve = backtestData.train_equity_curve || [];
-  const dailyCurve = backtestData.train_daily_equity_curve || [];
-  const benchmarkCurves = normalizeBenchmarkCurves(t.benchmark_curve || [], t.benchmark_curves || []);
-  buildEquityChart('chart-train', curve, benchmarkCurves, {
+  const curveMonthly = t.equity_curve || [];
+  const curveDaily = t.daily_equity_curve || [];
+  const curveQuarterly = t.equity_curve_quarterly || [];
+  const curveYearly = t.equity_curve_yearly || [];
+  buildEquityChart('chart-train', curveMonthly, curveDaily, curveQuarterly, curveYearly,
+                   t.benchmark_curves || [], {
     type: 'log', name: '累积净值 (log)',
     axisLabel: { formatter: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(0) },
-  }, dailyCurve);
-  renderResolutionButtons('train-zoom-btns', 'chart-train', curve);
+  });
+  renderResolutionButtons('train-zoom-btns', 'chart-train', curveMonthly);
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Render: Test Set
 // ═══════════════════════════════════════════════════════════════
 function renderTestSection() {
-  const split = backtestData.split;
   const testSec = document.getElementById('test-section');
-  if (!split || !split.test) { testSec.classList.add('hidden'); return; }
+  const t = backtestData.interval_windows?.recent_6m;
+  if (!t || !t.metrics || !t.date_range?.start) { testSec.classList.add('hidden'); return; }
   testSec.classList.remove('hidden');
 
-  const t = split.test;
   renderMetricsRow('test-metrics', t);
   document.getElementById('test-date-range').textContent =
-    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月`;
+    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月 · 资金重置`;
 
-  // Show/hide holdings button
   const btn = document.getElementById('btn-holdings');
   if (t.holdings && t.holdings.length > 0) {
     btn.classList.remove('hidden');
@@ -964,18 +1196,17 @@ function renderTestSection() {
     btn.classList.add('hidden');
   }
 
-  // Chart (with markPoints + resampling)
-  const rawCurve = backtestData.test_equity_curve || [];
-  const rawDailyCurve = backtestData.test_daily_equity_curve || [];
-  const rawBenchmarks = normalizeBenchmarkCurves(t.benchmark_curve || [], t.benchmark_curves || []);
+  const curveMonthly = t.equity_curve || [];
+  const curveDaily = t.daily_equity_curve || [];
+  const curveQuarterly = t.equity_curve_quarterly || [];
+  const curveYearly = t.equity_curve_yearly || [];
   const res = chartResolution['chart-test'] || 'month';
-  const selectedCurve = selectCurveForResolution(rawCurve, rawDailyCurve, res);
-  if (selectedCurve.length === 0) return;
-  const curve = resampleCurve(selectedCurve, res);
-  const benchmarkCurves = res === 'day' ? [] : rawBenchmarks.map(item => ({
+  const curve = selectCurveForResolution(curveMonthly, curveDaily, curveQuarterly, curveYearly, res);
+  if (!curve || curve.length === 0) return;
+  const benchmarkCurves = res === 'day' ? [] : (t.benchmark_curves || []).map(item => ({
     ...item,
-    curve: resampleCurve(item.curve || [], res),
-  })).filter(item => item.curve.length > 0);
+    curve: selectBenchmarkCurveForResolution(item, res),
+  })).filter(item => item.curve && item.curve.length > 0);
   const dates = curve.map(d => d.date);
   let fmt;
   if (res === 'year') fmt = v => v.slice(0, 4);
@@ -1039,7 +1270,7 @@ function renderTestSection() {
     series: series,
   };
   applyChartOption('chart-test', option);
-  renderResolutionButtons('test-zoom-btns', 'chart-test', rawCurve);
+  renderResolutionButtons('test-zoom-btns', 'chart-test', curveMonthly);
 }
 
 function formatCurrency(value) {
@@ -1122,12 +1353,11 @@ function renderMetricsRow(containerId, data) {
 // Holdings Modal
 // ═══════════════════════════════════════════════════════════════
 function showHoldings() {
-  // split模式用测试集，自定义区间用顶层 holdings
-  const split = backtestData?.split;
+  const recentWindow = backtestData?.interval_windows?.recent_6m;
   let holdings, title;
-  if (split?.test?.holdings && split.test.holdings.length > 0) {
-    holdings = split.test.holdings;
-    title = '测试集 · 持股明细 & 仓位';
+  if (recentWindow?.holdings && recentWindow.holdings.length > 0) {
+    holdings = recentWindow.holdings;
+    title = '近半年验证区间 · 持股明细 & 仓位';
   } else if (backtestData?.holdings && backtestData.holdings.length > 0) {
     holdings = backtestData.holdings;
     title = '持股明细 & 仓位';
@@ -1334,11 +1564,11 @@ function renderFactorPanel() {
               `<span style="margin-right:12px;">${k}: <b>${(v*100).toFixed(1)}%</b></span>`
             ).join('')}
           </div>` : ''}
-        <div style="margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px;font-size:12px;line-height:1.7;">
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.25);border-radius:8px;font-size:12px;line-height:1.7;color:#fff;">
           <div><b>Step 1.</b> 先按过滤条件筛掉不满足要求的股票。</div>
           <div><b>Step 2.</b> 对参与排序的输入数据按策略要求做标准化 / 排名转换。</div>
           <div><b>Step 3.</b> 按上面的公式计算最终排序因子。</div>
-          <div><b>Step 4.</b> 根据“${rf.direction || '既定方向'}”选出最终持仓。</div>
+          <div><b>Step 4.</b> 根据"${rf.direction || '既定方向'}"选出最终持仓。</div>
         </div>
       </div>`;
   }
@@ -1361,7 +1591,7 @@ function renderFactorPanel() {
   const components = ranking.components || [];
   if (components.length > 0) {
     html += `
-      <div class="factor-subsection" style="grid-column: 1 / -1;">
+      <div class="factor-subsection">
         <h4>排序输入项与数据公式</h4>
         <div class="factor-list">
           ${components.map((item, idx) => `
@@ -1405,31 +1635,113 @@ function renderFactorOverview() {
   ].join('');
 
   if (profileSummary) {
-    profileSummary.innerHTML = profiles.map(item => `
-      <div class="profile-card">
-        <div class="title">${item.label || item.window}</div>
-        <div class="meta">
-          <div>训练区间: ${item.window_start || '—'} → ${item.window_end || '—'}</div>
-          <div>最优候选: <b>${item.candidate_name || '—'}</b> · 综合评分 ${Number(item.score || 0).toFixed(3)}</div>
-          <div>评分拆解: overall ${Number(item.overall_score || 0).toFixed(3)} / recent ${Number(item.recent_score || 0).toFixed(3)}</div>
-          <div>参数: val&lt;${item.params?.val_pct_cutoff ?? '—'} / bias&lt;${item.params?.bias_pct ?? '—'} / bull_tp=${item.params?.bull_tp ?? '—'} / bear_tp=${item.params?.bear_tp ?? '—'}</div>
-          <div>持仓: bull_n=${item.params?.bull_n ?? '—'} / bear_n=${item.params?.bear_n ?? '—'} · 样本 ${item.months || 0} 月</div>
-        </div>
-      </div>
-    `).join('');
+    if (!profiles.length) {
+      profileSummary.innerHTML = '';
+    } else {
+      profileSummary.innerHTML = `
+        <div class="profile-summary-title">多窗口子策略配置</div>
+        <div class="profile-cards-row">` +
+        profiles.map(item => {
+          const p = item.params || {};
+          const scoreColor = item.score >= 3 ? '#00b894' : item.score >= 1.5 ? '#0984e3' : '#636e72';
+          return `
+          <div class="profile-card">
+            <div class="profile-card-header">
+              <span class="profile-window-badge">${item.label || item.window}</span>
+              <span class="profile-score-badge" style="color:${scoreColor};">评分 ${Number(item.score || 0).toFixed(2)}</span>
+            </div>
+            <div class="profile-card-body">
+              <div class="profile-row"><span class="profile-key">训练区间</span><span class="profile-val">${item.window_start || '—'} → ${item.window_end || '—'}</span></div>
+              <div class="profile-row"><span class="profile-key">最优候选</span><span class="profile-val" style="font-weight:700;">${item.candidate_name || '—'}</span></div>
+              <div class="profile-row"><span class="profile-key">样本月数</span><span class="profile-val">${item.months || 0} 月</span></div>
+              <div class="profile-row"><span class="profile-key">牛市持仓</span><span class="profile-val">${p.bull_n ?? '—'} 只 · 止盈 ${p.bull_tp != null ? Math.round(p.bull_tp * 100) + '%' : '—'}</span></div>
+              <div class="profile-row"><span class="profile-key">熊市持仓</span><span class="profile-val">${p.bear_n ?? '—'} 只 · 止盈 ${p.bear_tp != null ? Math.round(p.bear_tp * 100) + '%' : '—'}</span></div>
+            </div>
+          </div>`;
+        }).join('') +
+        `</div>`;
+    }
   }
 
-  body.innerHTML = items.map(item => `
+  // Build enrichment map from single-factor backtest data
+  const sfMap = {};  // overview name → {annual_return, regime_metrics, calmar}
+  const sfIdToName = factorOverview.single_factor_id_map || {};
+  if (_factorDataCache) {
+    (_factorDataCache.factors || []).forEach(f => {
+      const overviewName = sfIdToName[f.id];
+      if (overviewName) sfMap[overviewName] = f;
+    });
+  }
+
+  body.innerHTML = items.map(item => {
+    const sf = sfMap[item.name];
+    let annualCell, marketCell;
+    if (sf) {
+      const annualNum = parseFloat(sf.annual_return);
+      const annualCls = annualNum >= 0 ? 'return-positive' : 'return-negative';
+      annualCell = `<td class="${annualCls}" style="font-size:12px;">${sf.annual_return}<br/><span style="font-size:10px;color:var(--text-secondary);">Calmar ${sf.calmar.toFixed(2)}</span></td>`;
+
+      const bull = sf.regime_metrics?.['牛市'] || {};
+      const bear = sf.regime_metrics?.['熊市'] || {};
+      const bullNum = parseFloat(bull.avg_monthly_return) || -99;
+      const bearNum = parseFloat(bear.avg_monthly_return) || -99;
+      let marketLabel, marketColor, marketBg;
+      if (sf.calmar >= 1.2 && bullNum > 0.5 && bearNum > 0) {
+        marketLabel = '全天候'; marketColor = '#00897b'; marketBg = '#d6f5f0';
+      } else if (bullNum >= bearNum + 1) {
+        marketLabel = '牛市占优'; marketColor = '#d68910'; marketBg = '#ffeaa7';
+      } else if (bearNum >= bullNum + 0.5 || bearNum > 0.3) {
+        marketLabel = '熊市稳健'; marketColor = '#636e72'; marketBg = '#dfe6e9';
+      } else if (bullNum > 0 && bearNum > 0) {
+        marketLabel = '双市均可'; marketColor = '#0984e3'; marketBg = '#d4edff';
+      } else {
+        marketLabel = '效果偏弱'; marketColor = '#b2bec3'; marketBg = '#f0f0f0';
+      }
+      const tooltip = `牛市均月${bull.avg_monthly_return || 'N/A'}(${bull.n_periods || 0}期) / 熊市均月${bear.avg_monthly_return || 'N/A'}(${bear.n_periods || 0}期)`;
+      marketCell = `<td><span class="regime-chip" style="background:${marketBg};color:${marketColor}" title="${tooltip}">${marketLabel}</span></td>`;
+    } else {
+      // No single-factor backtest for this factor — derive a meaningful label from metadata
+      const cat = item.category || '';
+      const book = item.book_recommended || '';
+      let annualText = '不适用', annualSub = '', marketLabel, marketColor, marketBg, tooltip;
+      if (cat.includes('风险归因')) {
+        annualText = '不适用'; annualSub = '风险归因';
+        marketLabel = '非选股因子'; marketColor = '#636e72'; marketBg = '#dfe6e9';
+        tooltip = '市场风险因子，用于归因而非排序选股';
+      } else if (cat.includes('缠论扩展')) {
+        annualText = '待回测'; annualSub = '需启用缠论';
+        marketLabel = '缠论扩展'; marketColor = '#8e44ad'; marketBg = '#e8d5f2';
+        tooltip = '缠论衍生因子，需启用 chan_factors 流水线后单独回测';
+      } else if (cat.includes('交易行为')) {
+        annualText = '待回测'; annualSub = book || '数据未启用';
+        marketLabel = book.includes('强') ? '理论较强(待回测)' : '待回测';
+        marketColor = '#0984e3'; marketBg = '#d4edff';
+        tooltip = `书中评估：${book || '未注明'}`;
+      } else {
+        annualText = '待回测'; annualSub = book || '';
+        marketLabel = book.includes('弱') || book.includes('证据较弱') ? '证据较弱' : '待回测';
+        marketColor = '#b2bec3'; marketBg = '#f0f0f0';
+        tooltip = `书中评估：${book || '未注明'}`;
+      }
+      annualCell = `<td style="color:var(--text-secondary);font-size:12px;">${annualText}${annualSub ? `<br/><span style="font-size:10px;">${annualSub}</span>` : ''}</td>`;
+      marketCell = `<td><span class="regime-chip" style="background:${marketBg};color:${marketColor}" title="${tooltip}">${marketLabel}</span></td>`;
+    }
+    return `
     <tr class="${item.active ? 'active-row' : ''}">
       <td><b>${item.name}</b><div class="muted-small">${item.category || ''}</div></td>
       <td>${item.core_fields}</td>
       <td>${item.sort_direction}</td>
       <td>${item.long_short}</td>
       <td>${item.double_sort}</td>
-      <td>${item.book_recommended}</td>
       <td><span class="factor-badge ${item.active ? 'active' : ''}">${item.active ? '当前使用' : '未使用'}</span></td>
-    </tr>
-  `).join('');
+      ${annualCell}
+      ${marketCell}
+    </tr>`;
+  }).join('');
+}
+
+function enrichFactorOverviewFromSingleFactor() {
+  if (factorOverview) renderFactorOverview();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1558,6 +1870,213 @@ document.addEventListener('DOMContentLoaded', () => {
   if (endInput) endInput.addEventListener('change', clearQuickPeriodSelection);
   init();
 });
+</script>
+
+<!-- 数据更新进度弹窗 -->
+<div id="update-modal" class="modal-overlay hidden">
+  <div class="modal-content" style="max-width:480px;text-align:center;">
+    <h3 style="border-bottom:none;text-align:center;">数据更新</h3>
+    <div id="update-progress-bar" style="width:100%;height:8px;background:#e0e0e0;border-radius:4px;margin:16px 0;overflow:hidden;">
+      <div id="update-progress-fill" style="height:100%;width:0%;background:var(--accent);border-radius:4px;transition:width 0.5s ease;"></div>
+    </div>
+    <p id="update-message" style="font-size:14px;color:var(--text-secondary);margin-bottom:16px;">准备中...</p>
+    <p id="update-stage" style="font-size:12px;color:var(--text-secondary);"></p>
+    <button id="update-close-btn" class="btn btn-primary hidden" onclick="closeUpdateModal()" style="margin-top:16px;">关闭</button>
+  </div>
+</div>
+
+<script>
+let _updatePollTimer = null;
+
+async function triggerDataUpdate() {
+  const btn = document.getElementById('update-data-btn');
+  btn.disabled = true;
+  btn.textContent = '更新中...';
+
+  document.getElementById('update-modal').classList.remove('hidden');
+  document.getElementById('update-close-btn').classList.add('hidden');
+  document.getElementById('update-progress-fill').style.width = '0%';
+  document.getElementById('update-message').textContent = '正在启动数据更新...';
+  document.getElementById('update-stage').textContent = '';
+
+  try {
+    const resp = await fetch('/api/update_data', {method: 'POST'});
+    const data = await resp.json();
+    if (!resp.ok) {
+      document.getElementById('update-message').textContent = data.error || '启动失败';
+      document.getElementById('update-close-btn').classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = '更新数据';
+      return;
+    }
+    _updatePollTimer = setInterval(pollUpdateStatus, 2000);
+  } catch(e) {
+    document.getElementById('update-message').textContent = '请求失败: ' + e.message;
+    document.getElementById('update-close-btn').classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = '更新数据';
+  }
+}
+
+async function pollUpdateStatus() {
+  try {
+    const resp = await fetch('/api/update_data/status');
+    const data = await resp.json();
+
+    document.getElementById('update-progress-fill').style.width = data.progress_pct + '%';
+    document.getElementById('update-message').textContent = data.message || '';
+
+    const stageLabels = {
+      'cleaning': '阶段 1/4: 清理旧数据',
+      'fetching': '阶段 2/4: 拉取网络数据',
+      'rebuilding_cache': '阶段 3/4: 重建回测缓存',
+      'done': '完成',
+      'error': '出错',
+    };
+    document.getElementById('update-stage').textContent = stageLabels[data.stage] || '';
+
+    if (data.stage === 'done') {
+      clearInterval(_updatePollTimer);
+      document.getElementById('update-close-btn').classList.remove('hidden');
+      document.getElementById('update-progress-fill').style.background = 'var(--green)';
+      const btn = document.getElementById('update-data-btn');
+      btn.disabled = false;
+      btn.textContent = '更新数据';
+      // 刷新页面数据
+      await fetchDataInfo();
+      await runBacktest();
+    } else if (data.stage === 'error') {
+      clearInterval(_updatePollTimer);
+      document.getElementById('update-close-btn').classList.remove('hidden');
+      document.getElementById('update-progress-fill').style.background = 'var(--red)';
+      const btn = document.getElementById('update-data-btn');
+      btn.disabled = false;
+      btn.textContent = '更新数据';
+    }
+  } catch(e) {
+    // 网络错误，继续轮询
+  }
+}
+
+function closeUpdateModal() {
+  document.getElementById('update-modal').classList.add('hidden');
+  document.getElementById('update-progress-fill').style.background = 'var(--accent)';
+}
+
+// ── Factor single-factor backtest comparison ──────────────────────────────
+
+const FACTOR_COLORS = [
+  '#0984e3','#00b894','#d63031','#e17055','#6c5ce7','#fdcb6e','#00cec9','#a29bfe'
+];
+
+let _factorChart = null;
+let _factorDataCache = null;
+
+async function loadFactorBacktest(force = false) {
+  const topK = parseInt(document.getElementById('factor-topk-select').value) || 5;
+  const hint = document.getElementById('factor-loading-hint');
+  const status = document.getElementById('factor-placeholder-status');
+  if (hint) hint.style.display = 'inline';
+  if (status) status.textContent = '正在加载因子数据…（首次约30秒）';
+  try {
+    const url = `/api/factor_single_backtest?top_k=${topK}${force ? '&force=true' : ''}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) {
+      console.error('因子回测错误:', data.error);
+      if (status) status.textContent = '加载失败：' + data.error;
+      if (hint) hint.style.display = 'none';
+      return;
+    }
+    _factorDataCache = data;
+    renderFactorChart(data);
+    renderFactorTable(data);
+    enrichFactorOverviewFromSingleFactor();
+  } catch(e) {
+    console.error('因子回测请求失败:', e);
+    if (status) status.textContent = '网络错误，请手动点击运行分析';
+  } finally {
+    if (hint) hint.style.display = 'none';
+  }
+}
+
+function renderFactorChart(data) {
+  const factors = data.factors || [];
+  if (!factors.length) return;
+
+  const placeholder = document.getElementById('factor-compare-placeholder');
+  if (placeholder) placeholder.style.display = 'none';
+
+  const container = document.getElementById('factor-compare-chart');
+  if (!_factorChart) {
+    _factorChart = echarts.init(container);
+    window.addEventListener('resize', () => _factorChart && _factorChart.resize());
+  }
+
+  const series = factors.map((f, i) => ({
+    name: f.name,
+    type: 'line',
+    data: f.dates.map((d, j) => [d, f.nav[j]]),
+    lineStyle: { width: 2, color: FACTOR_COLORS[i % FACTOR_COLORS.length] },
+    itemStyle: { color: FACTOR_COLORS[i % FACTOR_COLORS.length] },
+    showSymbol: false,
+  }));
+
+  _factorChart.setOption({
+    backgroundColor: '#fff',
+    tooltip: {
+      trigger: 'axis',
+      formatter: ps => {
+        if (!ps.length) return '';
+        const lines = [`<b>${ps[0].axisValue}</b>`];
+        ps.sort((a,b) => b.data[1] - a.data[1]);
+        ps.forEach(p => lines.push(`${p.marker}${p.seriesName}: <b>${p.data[1].toFixed(3)}</b>`));
+        return lines.join('<br/>');
+      },
+    },
+    legend: { type: 'scroll', bottom: 0, itemWidth: 14, textStyle: { fontSize: 12 } },
+    grid: { left: 60, right: 20, top: 20, bottom: 50 },
+    xAxis: { type: 'time', axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', name: '累积净值', nameTextStyle: { fontSize: 12 }, axisLabel: { fontSize: 11 } },
+    series,
+  }, true);
+}
+
+function renderFactorTable(data) {
+  const factors = data.factors || [];
+  const body = document.getElementById('factor-compare-body');
+  body.innerHTML = '';
+
+  const sorted = [...factors].sort((a,b) => b.calmar - a.calmar);
+  sorted.forEach((f, i) => {
+    const bull = f.regime_metrics?.['牛市'] || {};
+    const bear = f.regime_metrics?.['熊市'] || {};
+    const bullRet = bull.avg_monthly_return || 'N/A';
+    const bearRet = bear.avg_monthly_return || 'N/A';
+
+    const bullNum = parseFloat(bullRet) || -999;
+    const bearNum = parseFloat(bearRet) || -999;
+    const bestMarket = bullNum >= bearNum ? '<span class="regime-chip regime-bull">牛市占优</span>' : '<span class="regime-chip regime-bear">熊市占优</span>';
+
+    const color = FACTOR_COLORS[factors.indexOf(f) % FACTOR_COLORS.length];
+    const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle;"></span>`;
+    const annualNum = parseFloat(f.annual_return);
+    const annualClass = annualNum >= 0 ? 'return-positive' : 'return-negative';
+    const calmarClass = f.calmar >= 1 ? 'return-positive' : f.calmar >= 0 ? '' : 'return-negative';
+
+    body.insertAdjacentHTML('beforeend', `<tr>
+      <td>${dot}<b>${f.name}</b></td>
+      <td class="${annualClass}">${f.annual_return}</td>
+      <td class="return-negative">${f.max_drawdown}</td>
+      <td class="${calmarClass}">${f.calmar.toFixed(2)}</td>
+      <td>${bullRet}</td>
+      <td>${bearRet}</td>
+      <td>${bestMarket}</td>
+    </tr>`);
+  });
+}
+
+// loadFactorBacktest is now called at the end of init() to ensure factorOverview is set first
 </script>
 
 </body>

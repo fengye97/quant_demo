@@ -35,17 +35,19 @@ class OriginalStrategy(BaseStrategy):
     strategy_description = '行业估值 + bias反转 + 小市值，主排序因子是原始总市值。'
 
     def __init__(self, val_pct_cutoff=0.68, bias_pct=0.52,
-                 vol_pct=0.78, **kwargs):
+                 vol_pct=0.78, val_history_periods=12, **kwargs):
         """
         参数:
-          val_pct_cutoff — 行业估值分位阈值，低于此值的行业保留
-          bias_pct       — bias_20 截断分位数
-          vol_pct        — 成交额波动截断分位数
+          val_pct_cutoff     — 行业估值分位阈值，低于此值的行业保留
+          bias_pct           — bias_20 截断分位数
+          vol_pct            — 成交额波动截断分位数
+          val_history_periods — 行业估值分位所需的最少历史期数
         """
         super().__init__(**kwargs)
         self.val_pct_cutoff = val_pct_cutoff
         self.bias_pct = bias_pct
         self.vol_pct = vol_pct
+        self.val_history_periods = int(val_history_periods)
         self.require_positive_pe = True
         self.require_positive_net_assets = True
         self.require_positive_profit = True
@@ -147,8 +149,8 @@ class OriginalStrategy(BaseStrategy):
                   说明当前该行业相对于自身历史处于高估值状态。
             """
             grp = grp.sort_values('交易日期')
-            ep_pct = grp['med_ep'].expanding(min_periods=12).rank(pct=True)
-            bp_pct = grp['med_bp'].expanding(min_periods=12).rank(pct=True)
+            ep_pct = grp['med_ep'].expanding(min_periods=self.val_history_periods).rank(pct=True)
+            bp_pct = grp['med_bp'].expanding(min_periods=self.val_history_periods).rank(pct=True)
             # 综合分位 = EP分位和BP分位的均值（等权）
             grp['val_pct'] = (ep_pct.fillna(0.5) + bp_pct.fillna(0.5)) / 2
             return grp

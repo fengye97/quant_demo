@@ -1,11 +1,19 @@
 """
-QualityValueStrategy — 质量价值小盘策略 v3.0
+QualityValueStrategy — 质量价值小盘策略 v3.1
 
 策略设计思路：
   - 不能放弃小市值（A股最强alpha来源）
   - 增加质量筛选，过滤跌破最惨的垃圾微盘
   - 增加价值倾斜，提供下行保护
   - 增加流动性过滤，保证实盘可行性
+
+v3.0 → v3.1 调参记录（目标：控制最大回撤<40%，同时保留小市值alpha）：
+  - size_weight:       0.50 → 0.65（强化小市值主效应，与原版策略方向一致）
+  - bm_weight:         0.25 → 0.20（BM 依赖 carry-forward 净资产，可靠性有限）
+  - roe_weight:        0.15 → 0.10（同上）
+  - turnover_weight:   0.10 → 0.05
+  - min_market_cap:    20亿 → 10亿（原20亿切断了大量小市值 alpha 来源）
+  - select_stock_num:  3 → 5（增加分散度，最直接有效的降回撤手段）
 
 流水线：
   1. prepare_data   — 基础过滤（IPO>1年、北交所排除）+ 数值化关键列
@@ -20,26 +28,34 @@ from strategies.base import BaseStrategy, safe_float
 
 
 class QualityValueStrategy(BaseStrategy):
-    """质量价值小盘策略 v3.0 — Size主导 + Value下行保护 + Quality筛选 + 反操纵过滤"""
+    """质量价值小盘策略 v3.1 — Size主导(65%) + Value下行保护(20%) + Quality筛选(10%) + 反操纵过滤(5%)；10亿市值下限；5只持仓"""
 
     strategy_id = 'quality_value'
-    display_name = '质量价值小盘 v3.0'
-    strategy_description = '多因子线性组合策略，先按交易日对各因子做 z-score，再按权重求和。'
+    display_name = '质量价值小盘 v3.1'
+    strategy_description = '多因子线性组合策略，先按交易日对各因子做 z-score，再按权重求和。v3.1调参：size权重65%+10亿下限过滤+5只持仓，强化小市值主效应，目标将最大回撤从约-55%降至<40%。'
 
-    def __init__(self, size_weight=0.50, bm_weight=0.25, roe_weight=0.15,
-                 turnover_weight=0.10, min_market_cap=20e8, min_turnover=5e7,
-                 bias_pct=0.52, vol_pct=0.78, select_stock_num=3, **kwargs):
+    def __init__(self, size_weight=0.65, bm_weight=0.20, roe_weight=0.10,
+                 turnover_weight=0.05, min_market_cap=10e8, min_turnover=5e7,
+                 bias_pct=0.52, vol_pct=0.78, select_stock_num=5, **kwargs):
         """
         参数:
-          size_weight      — 规模因子权重，默认 0.50（市值越小排名越靠前）
-          bm_weight        — 价值因子权重(BM)，默认 0.25（BM越高估值越低，越靠前）
-          roe_weight       — 质量因子权重(ROE)，默认 0.15（ROE越高盈利越好，越靠前）
-          turnover_weight  — 反操纵因子权重，默认 0.10（交易越稳定越靠前）
-          min_market_cap   — 最低总市值过滤（元），默认 20亿（仅排除微型壳股）
+          size_weight      — 规模因子权重，v3.1调整为 0.65（强化小市值主效应）
+          bm_weight        — 价值因子权重(BM)，v3.1调整为 0.20（减少BM权重，降低对carry-forward数据的依赖）
+          roe_weight       — 质量因子权重(ROE)，v3.1调整为 0.10（减少ROE权重，因ROE在carry-forward数据下可靠性有限）
+          turnover_weight  — 反操纵因子权重，v3.1调整为 0.05（保留少量流动性过滤）
+          min_market_cap   — 最低总市值过滤（元），v3.1调整为 10亿（放开更多小市值空间，避免削弱小市值alpha）
           min_turnover     — 最低成交额过滤（元），默认 5000万
           bias_pct         — bias_20 截断分位数，默认 0.52
           vol_pct          — 成交额波动截断分位数，默认 0.78
-          select_stock_num — 每期持仓数量，默认 3（分散降低回撤）
+          select_stock_num — 每期持仓数量，v3.1调整为 5（分散降低回撤，目标将最大回撤从约-55%控制到<40%）
+
+        v3.0 → v3.1 调参记录：
+          - size_weight: 0.50 → 0.65（强化小市值 alpha，与原版策略 100% size 方向一致）
+          - bm_weight: 0.25 → 0.20（减少价值因子；BM 依赖 carry-forward 净资产数据，可靠性有限）
+          - roe_weight: 0.15 → 0.10（同上；ROE 用 归母净利润_ttm/净资产 计算，carry-forward 偏差较大）
+          - turnover_weight: 0.10 → 0.05（保留少量流动性约束即可）
+          - min_market_cap: 20亿 → 10亿（原20亿过滤削弱小市值 alpha；A股5-10亿市值区间是小市值溢价主要来源）
+          - select_stock_num: 3 → 5（增加持仓分散度，是降低最大回撤最直接有效的方式）
         """
         super().__init__(select_stock_num=select_stock_num, **kwargs)
         self.size_weight = size_weight
@@ -237,7 +253,7 @@ class QualityValueStrategy(BaseStrategy):
         """
         六步过滤，按顺序执行：
 
-        Step 1 — 总市值下限：剔除微盘股（默认 > 50亿），避免操纵风险
+        Step 1 — 总市值下限：剔除微盘股（v3.1默认 > 10亿，原v3.0默认 > 20亿），避免操纵风险
         Step 2 — 成交额下限：确保流动性可交易（默认 > 5000万/月）
         Step 3 — ROE > 0：排除亏损公司
         Step 4 — 净资产 > 0：排除资不抵债公司

@@ -220,7 +220,7 @@ def handle_missing_values(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataF
     """Handle NaN values in feature columns.
 
     Strategy:
-      1. Per stock: forward-fill then backward-fill (time series continuity)
+      1. Per stock: forward-fill only (bfill is look-ahead bias in time series)
       2. Cross-section: fill remaining NaN with date median
       3. Any remaining: fill with 0
 
@@ -242,9 +242,9 @@ def handle_missing_values(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataF
         if col not in df.columns:
             continue
 
-        # Per-stock time-series fill
+        # Per-stock time-series fill (ffill only — bfill would leak future values)
         df[col] = df.groupby("股票代码")[col].transform(
-            lambda x: x.ffill().bfill()
+            lambda x: x.ffill()
         )
 
         # Cross-section median fill
@@ -331,6 +331,7 @@ def prepare_features(df: pd.DataFrame,
                      scaler_type: str = "robust",
                      scaler_dict: Optional[Dict] = None,
                      top_n_stocks: int = 100,
+                     market_features_df: Optional[pd.DataFrame] = None,
                      ) -> Tuple[pd.DataFrame, List[str], Dict, pd.DataFrame]:
     """Complete feature preparation pipeline.
 
@@ -346,6 +347,10 @@ def prepare_features(df: pd.DataFrame,
         Pre-fitted scalers for inference.
     top_n_stocks : int
         Number of top market-cap stocks to keep per date.
+    market_features_df : pd.DataFrame, optional
+        Pre-computed global market features (computed on full dataset before
+        train/val/test split so mkt_cum is historically continuous). When
+        provided, filtered to this split's dates instead of recomputing.
 
     Returns
     -------
@@ -366,8 +371,13 @@ def prepare_features(df: pd.DataFrame,
     # Derived features
     df = compute_derived_features(df)
 
-    # Market features
-    mkt_feat = compute_market_features(df)
+    # Market features — use pre-computed global version when provided so that
+    # mkt_cum (and thus mkt_ma12_signal) is continuous across splits.
+    if market_features_df is not None:
+        split_dates = df["交易日期"].unique()
+        mkt_feat = market_features_df[market_features_df["交易日期"].isin(split_dates)].copy()
+    else:
+        mkt_feat = compute_market_features(df)
 
     # Handle missing values
     all_cols = feature_cols + DERIVED_FEATURES

@@ -1,5 +1,8 @@
 # Claude guidance for `quant`
 
+## 语言
+所有回复请使用**中文**。
+
 ## Repo scope
 - Git repo root: `/Users/fatcat/Desktop/quant`
 - Current active project: `/Users/fatcat/Desktop/quant/stock_trade_demo`
@@ -16,8 +19,9 @@ This is a script-first A-share quantitative stock-selection and backtesting proj
 
 ## Main entrypoints
 - Web app: `stock_trade_demo/web_app.py`
-  - Run with: `python3 web_app.py`
+  - Preferred runtime in this repo: `/Users/fatcat/opt/anaconda3/bin/python web_app.py`
   - Expected URL: `http://localhost:8080`
+  - Important: do **not** assume `/opt/homebrew/bin/python3` has the required packages. In this project, the long-lived frontend service on port 8080 has been running under the Anaconda Python above, and using a different interpreter can fail with missing modules like `flask` or `selenium`.
 - Single-strategy CLI: `stock_trade_demo/choose_stock.py`
 - Multi-strategy compare CLI: `stock_trade_demo/compare_strategies.py`
 - Data conversion helper: `stock_trade_demo/convert_data.py`
@@ -43,6 +47,32 @@ This is a script-first A-share quantitative stock-selection and backtesting proj
   - Preloads data and cached strategy results, exposes APIs, filters by date range.
 - `stock_trade_demo/web/templates/index.html`
   - Strategy selector, factor panel, overview/train-test charts, holdings modal.
+
+### Strategy quick map
+- `stock_trade_demo/strategies/original.py`
+  - Pros: 历史收益最强，核心逻辑最清晰；A 股长期 alpha 主要来自极端小市值暴露。
+  - Cons: 回撤极深，熊市缺少整体空仓能力。
+  - Best use: 作为月度选股基准与最终对照组。
+- `stock_trade_demo/strategies/original_ensemble.py`
+  - Pros: 多窗口投票 + 风格适配能力更强，适合承载近期市场风格实验。
+  - Cons: 目前仍未稳定显著超越原版；很多局部 patch 只能修很窄窗口。
+  - Best use: 作为“近期风格增强”实验载体，而不是默认假定优于 original。
+- `stock_trade_demo/strategies/chan_enhanced.py`
+  - Pros: 保留小市值锚点的同时，可测试缠论信号是否能做轻量 tie-break。
+  - Cons: 月度代理缠论增益几乎不可见，历史上基本跑不赢原版。
+  - Best use: 仅作轻量研究对照，不再作为主线收益突破方向。
+- `stock_trade_demo/strategies/chan_only.py`
+  - Pros: 是验证“缠论能否脱离小市值独立成立”的直接 ablation。
+  - Cons: 已被明确证伪，显著丢失 A 股最强 alpha 来源。
+  - Best use: 反例 / 对照，不应再当生产候选。
+- `stock_trade_demo/strategies/method_a.py`
+  - Pros: 历史上验证过“日线缠论聚合到月度”这条更真实的研究路线。
+  - Cons: 当前仓库运行态下与 original 实际等效，不应再视为独立候选；历史覆盖率也一直偏稀疏。
+  - Best use: 作为已尝试过的研究档案；只有在恢复并验证独立因子产物后，才值得重新单列评估。
+- `stock_trade_demo/strategies/quality_value.py`
+  - Pros: 更偏 drawdown-aware，尝试在保留小市值主效应的同时引入质量/价值约束。
+  - Cons: 到目前为止更像“降低回撤但牺牲大量收益”的替代方案，不是收益新高主线。
+  - Best use: 仅在明确目标是风险收益平衡，而非突破绝对收益时再看。
 
 ## Data and cache expectations
 - Main dataset: `stock_trade_demo/stock_data.csv`
@@ -88,11 +118,102 @@ If editing them, first confirm whether the user wants them preserved as referenc
 4. Before changing holdings explanation text, check both:
    - `stock_trade_demo/strategies/base.py`
    - strategy-specific `build_selection_reason(...)`
-5. When validating the web app, check:
+5. Before validating the web app, first confirm **which process is actually serving port 8080**.
+   - Run `lsof -nP -iTCP:8080 -sTCP:LISTEN` and `ps -fp <pid>`.
+   - If an older `web_app.py` process is already serving 8080, your code edits are **not** visible until that exact process is restarted with the correct interpreter.
+   - In this repo, if the live process was started with `/Users/fatcat/opt/anaconda3/bin/python`, restart it with the same interpreter unless the user explicitly asks to change environments.
+6. When validating the web app, check:
    - `/api/info`
    - `/api/factors?strategy=...`
    - `/api/backtest?strategy=...`
    - homepage render on port 8080
+   - and confirm the served HTML or live DOM contains the new text/fields you just changed, not just that the page returns 200.
+7. For any frontend debug, review, or fix verification work, do not rely on code inspection or API responses alone. You must cross-check the running UI with a real browser screenshot after the change, and use that screenshot as part of the evidence before claiming the result is correct.
+8. For this repo, prefer the local skill `frontend-screenshot-verify` for frontend verification work. If that skill is unavailable or blocked by environment issues, fall back to the same Selenium + screenshot workflow manually rather than skipping the screenshot cross-check.
+9. If browser automation is needed, prefer Selenium + Chrome/Chromedriver already installed on this machine, but first verify the Python interpreter has those modules. If Selenium is missing in the default `python3`, either use the interpreter that already serves the app, or fall back to Chrome headless screenshots plus served-HTML checks instead of claiming the UI was verified.
+10. If you restart the frontend server, record the exact command/interpreter used and re-check the live pages afterward. A successful code edit does **not** imply the running frontend has picked it up.
+9. For any timing backtest date filter, review all supported intervals rather than spot-checking a subset. The filtered interval's first visible trade must never be a sell; if a visible trade exists, the first one must be a buy produced by the interval-local replay/serialization path.
+10. Timing trade-price semantics must stay consistent: signal is generated from close(t), execution fills at the **next trading day's** ETF open price (t+1), and floating P/L / current holding value are marked using that **next trading day's** ETF close price (t+1). When changing `_attach_etf_prices()`, `filter_timing_result()`, `timing_result_to_json()`, or the timing page, verify both price bases explicitly.
+11. Missing ETF history must never be fabricated. Do not use index prices, forward-fill/backfill, or any synthetic interpolation to invent ETF open/close data. Timing replay and serialization must not start before the ETF's first real trading day; if a requested interval has no real ETF bars, return no data / non-tradable state instead of simulating trades.
+12. **Backtest / signal pre-computation must happen offline, never at web_app startup or first request.** The Flask app is a read-only viewer:
+    - All factor calculations, grid searches, walk-forward runs, recent-window backtests, monthly position series, and full-history equity curves should be produced by standalone scripts (under `scripts/` or `stock_trade_demo/`) and persisted to disk (CSV / parquet / pickle in `data/`, `strategy/`, or `stock_trade_demo/.cache/`).
+    - `web_app.py` and any `/api/*` handler must only **load** these artifacts, slice by the requested date range, and return JSON. No first-request warm-up that takes more than a few seconds; no "正在预热..." spinners blocking the UI for minutes.
+    - When adding a new strategy: write/run the offline build script that produces the cached artifact, then wire the web layer to read it. Do not register a strategy that recomputes from raw factors at request time.
+    - If a cache file is missing, the API should return a clear error pointing at the script that produces it, not silently fall back to live computation.
+13. **Any selected backtest interval must still be replayed with full history available before the interval start.**
+    - Default validation windows are **recent 1 month / recent 1 quarter / recent 6 months**. Data older than 6 months is historical prior information for warm-up and state continuity, not a separately tuned fixed training split.
+    - Strategy parameters must stay identical across these validation windows. Do not tune one parameter set for 1m, another for 1q, and another for 6m.
+    - When a user selects a custom start date, do not fit, warm up, initialize indicators, or derive the first visible signal using only data inside that visible interval.
+    - Indicators, regime state, moving averages, momentum windows, staged-entry state, and any other path-dependent timing state must be computed using the history prior to the selected start date, then only the displayed output may be sliced to the requested interval.
+    - Validation-window performance must be computed with capital reset at the window start. Keep the signal path and holdings state from the full-history replay, but report return / annualized / drawdown using only the selected window's standalone capital path.
+    - In short: the user may choose what segment to view, but the strategy must "know" the history before that segment. Never treat the visible interval as a cold-start fit window unless the user explicitly asks for that experiment.
+
+### Strategy search guidance
+1. 先读 `STRATEGY_CHANGELOG.md` 和 `todo_list.md` 的已验证结论，再决定新实验，避免重复做已经证伪的方向。
+2. 没有新的数据频率、交易机制或 regime 切换架构时，不要优先重试这些路径：
+   - 外部 timing gate 给月度选股做空仓门控
+   - 月内 stop-loss
+   - weekly / true-weekly 选股换仓
+   - 单纯 board tilt / liquidity bonus / leadership rerank
+   - 纯 Chan 主排序
+3. 对“窄窗口改善但全历史退化”的方案，默认只把它当研究线索，不升级为生产默认参数。
+4. 目前最值得保留的结构性认知是：A 股月度 alpha 仍主要来自小市值 + 反追高；若要继续追成长主线，应优先考虑独立 regime 切换，而不是在同一套小市值 vote 框架里继续堆小 patch。
+
+## Stock data fetching: `get_stock_info.py`
+
+Root-level script at `/Users/fatcat/Desktop/quant/get_stock_info.py`. Two modes:
+
+### Real-time demo mode (default)
+```bash
+python3 get_stock_info.py
+```
+Fetches real-time quotes from Tencent Finance (`qt.gtimg.cn`) and daily K-line from Sina Finance (`quotes.sina.cn`). Currently hard-coded to two demo symbols (`688256` 寒武纪, `09988` 阿里巴巴). Suitable for live price checks.
+
+### Supplement mode (main use case)
+```bash
+# Supplement stock_data.csv with current month's data
+python3 get_stock_info.py --mode supplement --year 2026 --month 5
+
+# Test with a small subset first
+python3 get_stock_info.py --mode supplement --year 2026 --month 5 --max-stocks 20
+
+# Custom datalen (default 120, minimum recommended 80)
+python3 get_stock_info.py --mode supplement --year 2026 --month 5 --datalen 150
+```
+
+**What it does:**
+1. Reads all stocks from `stock_data.csv`
+2. Fetches `datalen` daily bars per stock from Sina (concurrent, 20 workers)
+3. Aggregates the target month's daily bars into a monthly OHLCV bar
+4. Computes all technical indicators from the daily data
+5. Fetches real-time quotes (Tencent) for PE/PB (falls back to previous month if market is closed)
+6. Appends new monthly rows and backfills the *previous* month's `下周期每天涨跌幅` column with the target month's actual daily returns
+
+**Data sources:**
+- Daily K-line: `https://quotes.sina.cn/cn/api/jsonp_v2.php/...` (`scale=240` = daily bars)
+- Real-time quotes: `https://qt.gtimg.cn/q=...` (PE, PB, turnover rate)
+
+**`datalen` requirement — critical:**
+- Default is `120` (≈5 months of trading days)
+- MACD(12,26,9) needs at minimum 26+9 = 35 bars *before* the target month for stable values. The target month itself uses ~15–22 bars. So `datalen=50` (old default) left only ~28-35 bars as warmup — barely enough and often unreliable.
+- `bias_20`, `振幅_20`, `涨跌幅std_20`, `成交额std_20` all need 20 bars of history.
+- **Use at least `datalen=80`; `datalen=120` (default) is safe and adds negligible latency.**
+
+**Indicators computed (matching `stock_data.csv` columns):**
+- `bias_5/10/20` — (close − SMA_n) / SMA_n
+- `振幅_5/10/20` — (rolling_max_high − rolling_min_low) / close
+- `涨跌幅std_5/10/20` — rolling std of daily returns
+- `成交额std_5/10/20` — rolling std of volume
+- `KDJ` (9,3,3) — K, D, J
+- `MACD` (12,26,9) — DIF, DEA, MACD bar
+- `涨跌幅_10/20` — n-day cumulative return
+- `市盈率倒数`, `市净率倒数` — from real-time quotes
+
+**Caching:** Fetched daily data and real-time quotes are pickled to `.cache/daily_YYYY-MM.pkl` and `.cache/rtquotes_YYYY-MM.pkl` to avoid re-fetching on re-runs. Delete these files to force a fresh fetch.
+
+**Carry-forward columns:** Financial statement data (净利润, 现金流, 净资产, etc.) and industry classifications are copied from the stock's most recent existing row. Only price/volume/technical indicator columns are freshly computed.
+
+**`下周期每天涨跌幅` backfill:** When supplementing month M, the script also updates month M−1's `下周期每天涨跌幅` column with the actual daily returns of month M. This is correct — it's what the backtesting engine uses to simulate holding positions opened at month M−1's selection date through month M.
 
 ## Related repo-level references
 Useful root-level context files:

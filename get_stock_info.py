@@ -919,6 +919,7 @@ def supplement_csv(
     target_month: int = 5,
     max_stocks: Optional[int] = None,
     cache_dir: Optional[str] = None,
+    datalen: int = 120,
 ) -> int:
     """
     Supplement stock_data.csv with data for the target month.
@@ -937,6 +938,11 @@ def supplement_csv(
         target_year, target_month: Target period
         max_stocks: Limit stocks for testing
         cache_dir: If provided, save/load fetched data to/from this directory
+        datalen: Daily bars to fetch per stock. Default 120 (~5 months) provides
+                 adequate warmup for MACD (needs 26+9=35 bars before target month),
+                 bias_20, 振幅_20, std_20 (needs 20 bars). Using datalen=50 is
+                 insufficient — MACD values become unreliable when most of the
+                 50 bars are the target month itself.
 
     Returns:
         Number of new rows appended.
@@ -1001,7 +1007,7 @@ def supplement_csv(
         print(f"  Loaded {len(daily_data)} stocks from cache", file=sys.stderr)
     else:
         print(f"\nFetching daily K-line data for {len(stocks_to_update)} stocks ...", file=sys.stderr)
-        daily_data = fetch_daily_batch(stocks_to_update, datalen=50)
+        daily_data = fetch_daily_batch(stocks_to_update, datalen=datalen)
         print(f"  Successfully fetched {len(daily_data)} stocks", file=sys.stderr)
         if daily_cache_file:
             with open(daily_cache_file, "wb") as f:
@@ -1336,6 +1342,16 @@ Examples:
         default=".cache",
         help="Directory for caching fetched data (default: .cache). Set to empty string to disable.",
     )
+    parser.add_argument(
+        "--datalen",
+        type=int,
+        default=120,
+        help=(
+            "Number of daily bars to fetch per stock (default: 120, ~5 months). "
+            "Must be at least 80 for reliable MACD/bias_20/std_20 computation. "
+            "The target month occupies ~15-22 bars; the remainder is warmup history."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1359,6 +1375,7 @@ Examples:
             target_month=args.month,
             max_stocks=args.max_stocks,
             cache_dir=cache_dir_val,
+            datalen=args.datalen,
         )
         print(f"\nSupplement complete. {count} rows added.")
 

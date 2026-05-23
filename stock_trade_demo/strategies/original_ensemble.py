@@ -133,13 +133,15 @@ _TIMING_SIGNAL_CACHE = {}
 class OriginalEnsembleStrategy(OriginalStrategy):
     strategy_id = 'original_ensemble'
     display_name = '多窗口投票版原策略'
-    strategy_description = '近3年/近5年/全量三个原版子策略先独立拟合，再按 0.5/0.3/0.2 加权投票；当创业板与科创50双信号同时转强时，切到成长票短持有模式。'
+    strategy_description = '近3年/近5年/全量三个原版子策略先独立拟合，再按 0.5/0.3/0.2 加权投票；E3门控：只让高 vote_total_score（≥0.7分位）候选吃到板块倾斜，避免稀释低票股票的小市值主效应。成长短持有 overlay 保留为可选实验开关，默认关闭。'
 
     def __init__(self, weight_3y=0.5, weight_5y=0.3, weight_full=0.2,
                  vote_top_k=12, profile_end_date='2026-03-31',
                  board_tilt_strength=0.4, board_recent_weight=0.65,
                  board_short_window=20, board_long_window=60,
-                 growth_timing_mode='both_signals', growth_hold_days=4, growth_top_n=2,
+                 board_tilt_gate_pct=0.7,
+                 overheat_penalty=0.5, overheat_bias_pct=0.80,
+                 growth_timing_mode='off', growth_hold_days=4, growth_top_n=2,
                  growth_board_scope='growth', **kwargs):
         super().__init__(**kwargs)
         self.weight_3y = weight_3y
@@ -151,6 +153,15 @@ class OriginalEnsembleStrategy(OriginalStrategy):
         self.board_recent_weight = float(board_recent_weight)
         self.board_short_window = int(board_short_window)
         self.board_long_window = int(board_long_window)
+        # E3: gate — only candidates with vote_total_score >= this quantile receive board tilt
+        # 0.7 means only the top 30% by vote_total_score get board tilt; set to 0.0 to disable gating
+        self.board_tilt_gate_pct = float(board_tilt_gate_pct)
+        # E5/E7: overheat penalty — bias_20 过热惩罚（只保留验证有效的这一个增强）
+        # 当候选股票 bias_20 超过当期 overheat_bias_pct 分位时，
+        # 对其 vote_total_score 乘以 (1 - overheat_penalty)，降低过热票的排序优先级
+        # 设 overheat_penalty=0.0 则关闭此增强
+        self.overheat_penalty = float(overheat_penalty)
+        self.overheat_bias_pct = float(overheat_bias_pct)
         self.growth_timing_mode = str(growth_timing_mode or 'off')
         self.growth_hold_days = max(int(growth_hold_days), 1)
         self.growth_top_n = max(int(growth_top_n), 1)
@@ -180,12 +191,24 @@ class OriginalEnsembleStrategy(OriginalStrategy):
              'description': '根据创业板/科创板/主板相对强弱，对最终投票结果做轻量倾斜；默认保持保守，避免压过主投票逻辑。',
              'default': self.board_tilt_strength, 'min': 0.0, 'max': 3.0, 'step': 0.1,
              'unit': '', 'type': 'weight'},
+            {'key': 'board_tilt_gate_pct', 'label': '板块倾斜门控分位',
+             'description': '只对当期 vote_total_score >= 此分位数的候选施加板块倾斜（E3门控）；0.0=全部施加，0.7=仅前30%高票候选。',
+             'default': self.board_tilt_gate_pct, 'min': 0.0, 'max': 1.0, 'step': 0.05,
+             'unit': '', 'type': 'filter'},
+            {'key': 'overheat_penalty', 'label': 'bias_20 过热惩罚强度',
+             'description': 'E5/E7：对 bias_20 超过 overheat_bias_pct 分位的候选，把其 vote_total_score 乘以 (1-此值)；0.0=关闭。',
+             'default': self.overheat_penalty, 'min': 0.0, 'max': 1.0, 'step': 0.05,
+             'unit': '', 'type': 'filter'},
+            {'key': 'overheat_bias_pct', 'label': 'bias_20 过热分位阈值',
+             'description': 'bias_20 超过此截面分位的候选被视为过热，会受 overheat_penalty 惩罚。',
+             'default': self.overheat_bias_pct, 'min': 0.5, 'max': 1.0, 'step': 0.05,
+             'unit': '', 'type': 'filter'},
             {'key': 'growth_hold_days', 'label': '成长短持有天数',
-             'description': '当成长 timing gate 触发时，对成长强势仓位只持有前若干个交易日。',
+             'description': '当成长 timing gate 触发时，对成长强势仓位只持有前若干个交易日；该实验开关默认关闭。',
              'default': self.growth_hold_days, 'min': 2, 'max': 10, 'step': 1,
              'unit': '日', 'type': 'timing'},
             {'key': 'growth_top_n', 'label': '成长保留只数',
-             'description': '当成长 timing gate 触发时，仅保留前若干只成长板块股票。',
+             'description': '当成长 timing gate 触发时，仅保留前若干只成长板块股票；该实验开关默认关闭。',
              'default': self.growth_top_n, 'min': 1, 'max': 6, 'step': 1,
              'unit': '只', 'type': 'timing'},
         ]
@@ -195,7 +218,8 @@ class OriginalEnsembleStrategy(OriginalStrategy):
             {'name': '多窗口训练', 'description': '固定训练截止日之前，分别基于近3年、近5年和全量历史选择最优原版参数 profile。'},
             {'name': '子策略候选过滤', 'description': '每个子策略内部沿用原版的行业估值、bias_20 和成交额波动过滤。'},
             {'name': '投票支持过滤', 'description': '最终只在至少获得一个子策略投票支持的股票中排名。'},
-            {'name': '板块强弱倾斜', 'description': '根据创业板/科创板相对 CSI1000 的近期强弱，对最终票分做轻量倾斜，帮助组合跟随最新主线风格。'},
+            {'name': 'bias_20 过热惩罚（E5/E7）', 'description': 'bias_20 超过截面高分位的过热候选，其 vote_total_score 打折（乘以 1-overheat_penalty），避免追到短期极端拉升票；此为验证有效的唯一正向增强。'},
+            {'name': '板块强弱倾斜（E3门控）', 'description': '根据创业板/科创板相对 CSI1000 的近期强弱，对最终票分做轻量倾斜；E3门控后仅高 vote_total_score（≥0.7分位）候选才获得板块加分，避免稀释低票股票的小市值主效应。'},
         ]
 
     def get_factor_overview_tags(self):
@@ -205,7 +229,7 @@ class OriginalEnsembleStrategy(OriginalStrategy):
         weights = self._normalized_weights()
         return {
             'name': '全市场小市值 rank / (1 + 多窗口加权投票分 + 板块强弱分)',
-            'formula': '因子 = size_rank / (1 + 3y票分 + 5y票分 + full票分 + board_tilt)',
+            'formula': '因子 = size_rank / (1 + 3y票分 + 5y票分 + full票分 + board_tilt[E3门控])',
             'direction': '升序（越小越好）',
             'description': '三个时间窗口子策略先投票，再根据创业板/科创板/主板相对强弱做轻量倾斜，在保留小市值锚的同时跟随最新主线风格。',
             'combination_method': 'weighted_vote_then_size_tiebreak',
@@ -253,13 +277,13 @@ class OriginalEnsembleStrategy(OriginalStrategy):
                 },
                 {
                     'key': 'board_tilt_score',
-                    'label': '板块强弱分',
+                    'label': '板块强弱分（E3门控）',
                     'source_column': 'board_tilt_score',
                     'role': '风格倾斜',
                     'orientation': '越大越好',
-                    'transformation': f'board_strength × {round(self.board_tilt_strength, 2)}',
+                    'transformation': f'board_strength × {round(self.board_tilt_strength, 2)}（仅vote_total≥{int(self.board_tilt_gate_pct*100)}%分位）',
                     'weight': round(self.board_tilt_strength, 4),
-                    'notes': '创业板/科创板近期更强时，对相应板块股票做轻量加分。',
+                    'notes': f'E3门控：仅 vote_total_score ≥ {int(self.board_tilt_gate_pct*100)}% 分位候选获板块加分，避免稀释低票股票的小市值主效应。',
                 },
             ],
             'weight_details': {
@@ -289,7 +313,9 @@ class OriginalEnsembleStrategy(OriginalStrategy):
             self._factor_item('近5年票分', score_5y, f'权重 {round(weights["5y"] * 100, 1)}%', '来自近5年最优 profile 的前排加分'),
             self._factor_item('全量票分', score_full, f'权重 {round(weights["full"] * 100, 1)}%', '来自全量最优 profile 的前排加分'),
             self._factor_item('板块归属', board_label, '风格识别', '按股票代码前缀识别创业板/科创板/主板'),
-            self._factor_item('板块强弱分', board_tilt_score, f'原始强弱 {board_raw_score}', '最近更强的板块会获得轻量加分'),
+            self._factor_item('板块强弱分（E3门控）', board_tilt_score,
+                              f'原始强弱 {board_raw_score}',
+                              f'E3门控：仅 vote_total_score≥{int(self.board_tilt_gate_pct*100)}%分位的候选获得板块加分' if self.board_tilt_gate_pct > 0.0 else '最近更强的板块会获得轻量加分'),
             self._factor_item('最终排序公式', 'size_rank / (1 + vote_total + board_tilt)', '投票+板块+小市值', '票分和板块强弱分越高，最终因子越小'),
         ]
 
@@ -308,10 +334,13 @@ class OriginalEnsembleStrategy(OriginalStrategy):
                     f"bull_n={params.get('bull_n', self.bull_n)} / bear_n={params.get('bear_n', self.bear_n)}"
                 )
 
+        gated_note = ''
+        if self.board_tilt_gate_pct > 0.0:
+            gated_note = f'（E3门控启用，门限={int(self.board_tilt_gate_pct*100)}%分位，该股{"已" if board_tilt_score != 0.0 else "未"}获板块倾斜）'
         details = [
             f'该股票获得 {support_count} 个时间窗口子策略支持，主导来源是 {primary_label}。',
             f'三路票分分别为 3Y={score_3y}、5Y={score_5y}、Full={score_full}，合计 {total_score}。',
-            f'该股属于{board_label}，当前板块原始强弱分为 {board_raw_score}，倾斜后贡献 {board_tilt_score} 分。',
+            f'该股属于{board_label}，当前板块原始强弱分为 {board_raw_score}，倾斜后贡献 {board_tilt_score} 分{gated_note}。',
             f'最终不是简单按总票分排序，而是用全市场小市值排名第 {size_rank} 名作为锚，再叠加板块强弱倾斜。',
         ]
         details.extend(profile_summaries)
@@ -392,11 +421,41 @@ class OriginalEnsembleStrategy(OriginalStrategy):
         )
 
         merged = merged[merged['vote_total_score'] > 0].copy()
+
+        # E5/E7 过热惩罚：对 bias_20 超过截面 overheat_bias_pct 分位的候选做降票
+        # 验证有效的唯一正向增强（-2.19% → -2.03%），单独保留，不叠加其他月度增强
+        if self.overheat_penalty > 0.0 and 'bias_20' in merged.columns:
+            overheat_threshold = merged.groupby('交易日期')['bias_20'].transform(
+                lambda x: x.quantile(self.overheat_bias_pct)
+            )
+            overheat_mask = merged['bias_20'] >= overheat_threshold
+            vote_multiplier = np.where(overheat_mask, 1.0 - self.overheat_penalty, 1.0)
+            merged['vote_total_score'] = merged['vote_total_score'] * vote_multiplier
+            merged['vote_score_3y'] = merged['vote_score_3y'] * vote_multiplier
+            merged['vote_score_5y'] = merged['vote_score_5y'] * vote_multiplier
+            merged['vote_score_full'] = merged['vote_score_full'] * vote_multiplier
+
         merged['board_raw_score'] = merged.apply(
             lambda row: self._get_board_strength_for_date(row['交易日期'], str(row.get('board_key', 'main_board') or 'main_board'), board_strength_lookup),
             axis=1,
         )
-        merged['board_tilt_score'] = merged['board_raw_score'] * self.board_tilt_strength
+
+        # E3 门控：只让高 vote_total_score 候选吃到板块倾斜
+        # 若 board_tilt_gate_pct > 0，则每期计算 vote_total_score 的指定分位，
+        # 只有 vote_total_score >= 该分位的候选才会获得板块倾斜分，其余为 0。
+        if self.board_tilt_gate_pct > 0.0:
+            vote_gate_threshold = merged.groupby('交易日期')['vote_total_score'].transform(
+                lambda x: x.quantile(self.board_tilt_gate_pct)
+            )
+            gate_mask = merged['vote_total_score'] >= vote_gate_threshold
+            merged['board_tilt_score'] = np.where(
+                gate_mask,
+                merged['board_raw_score'] * self.board_tilt_strength,
+                0.0,
+            )
+        else:
+            merged['board_tilt_score'] = merged['board_raw_score'] * self.board_tilt_strength
+
         merged['vote_primary_window'] = merged[['vote_score_3y', 'vote_score_5y', 'vote_score_full']].idxmax(axis=1)
         merged['vote_primary_window'] = merged['vote_primary_window'].map({
             'vote_score_3y': '3y',

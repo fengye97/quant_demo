@@ -72,6 +72,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rl_stock_selector.features import (
     load_stock_data,
     filter_stock_universe,
+    compute_market_features,
     prepare_features,
     get_date_splits,
     DEFAULT_FEATURES,
@@ -311,10 +312,15 @@ def main():
     print("\n[2/5] Engineering features...")
     df = filter_stock_universe(df, min_listing_days=250, exclude_bj=True)
 
+    # Compute market features once on the full dataset so mkt_cum is
+    # historically continuous across train/val/test splits.
+    mkt_feat_all = compute_market_features(df)
+
     # Fit on training data only
     train_df = df[df["交易日期"].isin(train_dates)].copy()
     train_df, norm_cols, scaler_dict, mkt_feat_train = prepare_features(
-        train_df, scaler_type="robust", top_n_stocks=args.universe_size
+        train_df, scaler_type="robust", top_n_stocks=args.universe_size,
+        market_features_df=mkt_feat_all,
     )
     print(f"  Train features: {len(norm_cols)} normalized, shape: {train_df.shape}")
 
@@ -324,7 +330,8 @@ def main():
     val_df, _, _, mkt_feat_val = prepare_features(
         val_df, feature_cols=list(DEFAULT_FEATURES),
         scaler_type="robust", scaler_dict=scaler_dict,
-        top_n_stocks=args.universe_size
+        top_n_stocks=args.universe_size,
+        market_features_df=mkt_feat_all,
     )
 
     # Apply same transforms to test
@@ -333,12 +340,9 @@ def main():
     test_df, _, _, mkt_feat_test = prepare_features(
         test_df, feature_cols=list(DEFAULT_FEATURES),
         scaler_type="robust", scaler_dict=scaler_dict,
-        top_n_stocks=args.universe_size
+        top_n_stocks=args.universe_size,
+        market_features_df=mkt_feat_all,
     )
-
-    # Combine market features
-    mkt_feat_all = pd.concat([mkt_feat_train, mkt_feat_val, mkt_feat_test],
-                             ignore_index=True)
 
     print(f"  Train samples: {len(train_df):,}")
     print(f"  Val samples:   {len(val_df):,}")

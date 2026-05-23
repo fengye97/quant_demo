@@ -4,376 +4,1097 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>量化择时策略</title>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     :root {
-      --bg: #f5f7fb;
-      --panel: #fff;
+      --bg: #f5f6fa;
+      --card: #fff;
       --text: #2d3436;
-      --text-secondary: #636e72;
-      --accent: #6c5ce7;
+      --muted: #636e72;
+      --border: #e0e0e0;
+      --accent: #0984e3;
       --green: #00b894;
       --red: #d63031;
-      --border: #e9edf5;
+      --shadow: 0 2px 12px rgba(0,0,0,0.06);
+      --radius: 12px;
     }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-    .app { max-width: 1440px; margin: 0 auto; padding: 24px; }
-    .header, .controls-bar, .summary-grid, .section-card, .panel { background: var(--panel); border-radius: 16px; box-shadow: 0 6px 24px rgba(15, 23, 42, 0.06); }
-    .header { padding: 24px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
-    .header h1 { margin: 0 0 8px; font-size: 28px; }
-    .subtitle { color: var(--text-secondary); margin: 0; }
-    .controls-bar { padding: 18px; display: flex; gap: 16px; flex-wrap: wrap; align-items: end; margin-bottom: 18px; }
-    .control-group { display: flex; flex-direction: column; gap: 6px; min-width: 180px; }
-    .control-group label { font-size: 13px; color: var(--text-secondary); }
-    select, input[type="date"] { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 14px; background: #fff; }
-    .btn { border: none; border-radius: 10px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Heiti SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    .app { max-width: 1600px; margin: 0 auto; padding: 20px; }
+
+    /* Header */
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+    .header h1 { font-size: 22px; font-weight: 700; }
+    .header .subtitle { font-size: 13px; color: var(--muted); margin-top: 3px; }
+
+    /* Controls */
+    .controls-bar { background: var(--card); border-radius: var(--radius); padding: 13px 18px; margin-bottom: 16px; box-shadow: var(--shadow); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .period-btn { padding: 5px 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; background: var(--bg); cursor: pointer; font-weight: 600; color: var(--muted); transition: all 0.15s; }
+    .period-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .period-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .controls-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+    .date-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--bg); color: var(--text); }
+    .btn { padding: 7px 18px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
     .btn-primary { background: var(--accent); color: #fff; }
-    .btn-secondary { background: #eef2ff; color: var(--accent); }
-    .summary-grid { padding: 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 18px; }
-    .summary-card { border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: linear-gradient(180deg, #fff, #fafbff); }
-    .summary-card h3 { margin: 0 0 10px; font-size: 18px; }
-    .signal-pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .signal-on { background: rgba(0,184,148,.12); color: var(--green); }
-    .signal-off { background: rgba(214,48,49,.12); color: var(--red); }
-    .muted { color: var(--text-secondary); font-size: 13px; }
-    .section-card { padding: 18px; margin-bottom: 18px; }
-    .section-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
-    .metrics-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-    .metric-mini { background: #fafbff; border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
-    .metric-mini .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
-    .metric-mini .value { font-size: 20px; font-weight: 700; }
-    .chart-box { width: 100%; height: 430px; }
-    .panel { padding: 18px; margin-bottom: 18px; }
-    .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 14px; }
-    .factor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
-    .factor-item { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fafbff; }
-    .factor-name { font-weight: 700; margin-bottom: 4px; }
-    .factor-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.6; }
-    .slider-row { display: flex; gap: 10px; align-items: center; }
-    .slider-row input { flex: 1; }
-    .slider-value { min-width: 56px; text-align: right; font-weight: 700; color: var(--accent); }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
-    th { text-align: left; color: var(--text-secondary); font-weight: 600; }
-    .hidden { display: none; }
-    .error-banner { background: rgba(214,48,49,.08); color: var(--red); padding: 12px 14px; border-radius: 10px; margin-bottom: 14px; }
-    .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,.65); display: flex; align-items: center; justify-content: center; z-index: 10; }
-    .loading-spinner { width: 42px; height: 42px; border: 4px solid #dfe6ff; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; }
+    .btn-primary:hover { background: #0773c5; }
+    .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: #e8e8e8; }
+
+    /* 3-column grid */
+    .indices-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+    @media (max-width: 1100px) { .indices-grid { grid-template-columns: 1fr; } }
+
+    /* Index card */
+    .index-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; }
+    .card-header { padding: 14px 16px 0; }
+    .card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .card-title { font-size: 18px; font-weight: 700; }
+    .card-desc { font-size: 12px; color: var(--muted); }
+    /* 当前信号大横条 */
+    .signal-bar { padding: 10px 16px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .signal-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .signal-actions { display: flex; align-items: center; justify-content: flex-end; flex: 1; min-width: 0; }
+    .signal-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .signal-badge { display: inline-flex; align-items: center; gap: 5px; padding: 6px 16px; border-radius: 10px; font-size: 20px; font-weight: 800; white-space: nowrap; letter-spacing: 0.5px; }
+    .badge-buy  { background: rgba(214,48,49,.12); color: var(--red); }
+    .badge-sell { background: rgba(0,184,148,.12); color: var(--green); }
+    .badge-hold { background: rgba(9,132,227,.12); color: var(--accent); }
+    .badge-flat { background: rgba(99,110,114,.1); color: var(--muted); }
+
+    /* Metrics 2×3 grid */
+    .metrics-strip { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--border); }
+    .metric-cell { padding: 9px 13px; border-right: 1px solid var(--border); }
+    .metric-cell:last-child { border-right: none; }
+    .metric-cell .lbl { font-size: 11px; color: var(--muted); margin-bottom: 1px; white-space: nowrap; }
+    .metric-cell .val { font-size: 15px; font-weight: 700; }
+    .val-pos  { color: var(--red); }
+    .val-neg  { color: var(--green); }
+    .val-neu  { color: var(--text); }
+    .split-metrics { display:grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); background:#fafcff; }
+    .split-cell { padding: 8px 13px; border-right: 1px solid var(--border); }
+    .split-cell:last-child { border-right:none; }
+    .split-label { font-size: 10px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; }
+    .split-value { font-size: 13px; font-weight: 700; }
+
+    .position-strip { display: grid; grid-template-columns: repeat(2, 1fr); border-bottom: 1px solid var(--border); }
+    .position-item { padding: 9px 13px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .position-item:nth-child(2n) { border-right: none; }
+    .position-item .lbl { font-size: 11px; color: var(--muted); margin-bottom: 1px; white-space: nowrap; }
+    .position-item .val { font-size: 14px; font-weight: 700; }
+    .trade-detail-entry { padding: 0; border-bottom: none; background: transparent; }
+    .trade-detail-trigger { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--accent); font-size: 13px; font-weight: 700; cursor: pointer; min-width: 260px; max-width: 100%; }
+    .trade-detail-trigger:hover { background: #f8fbff; border-color: var(--accent); }
+    .trade-detail-trigger span:last-child { color: var(--accent); }
+    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 200; }
+    .modal-content { background: #fff; border-radius: var(--radius); padding: 24px 28px; max-width: 1080px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
+    .modal-content h3 { font-size: 18px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--border); }
+    .modal-close { float: right; background: none; border: none; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; }
+    .modal-close:hover { color: var(--text); }
+    .trade-modal-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .trade-modal-meta div { padding: 10px 12px; border-radius: 10px; background: var(--bg); font-size: 13px; }
+    .trade-modal-block { background: var(--bg); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+    .trade-modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .trade-modal-sub { color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .fee-summary { background:#f5fbff; border:1px solid #cfe4ff; border-radius:10px; padding:12px 14px; margin-bottom:14px; }
+    .fee-summary-title { font-size:13px; font-weight:700; color:#1f3c88; margin-bottom:8px; }
+    .fee-summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; }
+    .fee-summary-grid > div { background:#fff; border-radius:8px; padding:8px 10px; font-size:12px; display:flex; justify-content:space-between; align-items:center; }
+    .fee-summary-grid > div span { color: var(--muted); }
+    .fee-summary-grid > div strong { color: var(--text); font-weight:700; }
+    .realism-details { margin-top:10px; }
+    .realism-details summary { font-size:12px; color: var(--accent); cursor:pointer; font-weight:700; padding:4px 0; }
+    .realism-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:6px; margin-top:8px; padding:8px 10px; background:#fff; border-radius:8px; font-size:11px; color: var(--text); }
+    .realism-grid > div { padding:3px 0; }
+    .realism-grid strong { color: var(--muted); font-weight:600; }
+
+    /* Chart area */
+    .chart-col-wrap { flex: 1; min-height: 500px; position: relative; padding: 8px 12px 12px; }
+    .col-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
+    .col-chart-inner { width: 100%; height: 100%; min-height: 480px; }
+
+    /* Footer signal reason */
+    .card-footer { padding: 9px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); line-height: 1.5; flex-shrink: 0; }
+    .card-footer strong { color: var(--text); }
+
+    /* Section cards */
+    .section-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; margin-bottom: 16px; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    .section-title { font-size: 16px; font-weight: 700; }
+
+    /* Factor / formula panel */
+    .formula-section { border-top: 1px solid var(--border); padding: 12px 14px 4px; background: #fcfdff; }
+    .formula-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .formula-summary { font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 10px; }
+    .formula-block { background: var(--bg); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+    .formula-block-title { font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+    .formula-expr { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #1f3c88; line-height: 1.6; margin-bottom: 4px; word-break: break-word; }
+    .formula-note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    .param-section { border-top: 1px solid var(--border); padding: 12px 14px 14px; }
+    .param-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .param-title { font-size: 14px; font-weight: 700; }
+    .factor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .factor-item { background: var(--bg); border-radius: 10px; padding: 12px; }
+    .factor-name { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+    .factor-desc { font-size: 12px; color: var(--muted); margin-bottom: 9px; line-height: 1.5; }
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    .slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+    .slider-row select { flex: 1; }
+    .slider-val { min-width: 58px; text-align: right; font-weight: 700; color: var(--accent); font-size: 13px; }
+
+    .changelog-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+    .changelog-item { border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: linear-gradient(180deg, #fcfdff 0%, #f8fbff 100%); }
+    .changelog-kicker { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: .6px; margin-bottom: 8px; }
+    .changelog-head { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 8px; }
+    .changelog-title { font-size: 16px; font-weight: 700; line-height: 1.4; }
+    .changelog-meta { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    .changelog-summary { font-size: 13px; color: var(--text); line-height: 1.7; margin-bottom: 10px; }
+    .changelog-list { margin-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .changelog-delta { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 12px; }
+    .delta-chip { padding: 4px 10px; border-radius: 999px; background:#eef6ff; color:#1f3c88; font-size:11px; font-weight:700; }
+
+    /* Trade table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #eef2f7; padding: 9px 10px; text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+    td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .action-buy  { color: var(--red);   font-weight: 700; }
+    .action-sell { color: var(--green); font-weight: 700; }
+
+    /* Loading / utils */
+    .hidden { display: none !important; }
+    .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,.82); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .loading-spinner { width: 44px; height: 44px; border: 4px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @media (max-width: 1100px) { .summary-grid, .metrics-row, .factor-grid { grid-template-columns: 1fr; } .header { flex-direction: column; } }
+    .error-banner { background: #ffeaa7; border: 1px solid #fdcb6e; border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; color: #8a6800; }
+    select.ctrl-select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--bg); color: var(--text); cursor: pointer; }
   </style>
 </head>
 <body>
-  <div class="app">
-    <div class="header">
-      <div>
-        <h1>量化择时策略 · 指数买卖时机分析</h1>
-        <p class="subtitle">三个指数分别维护独立策略，并分别给出 CSI1000 / 科创50 / 创业板 的择时信号。</p>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="btn btn-secondary" onclick="window.location.href='/'">返回选股页</button>
-        <span id="data-date-badge" class="signal-pill signal-on">数据更新至: ---</span>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>量化择时策略 · 指数买卖时机分析</h1>
+      <div class="subtitle">红色 ▲ = 买入信号 [B]&ensp;·&ensp;绿色 ▼ = 卖出信号 [S]&ensp;·&ensp;三个指数独立策略</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
+      <a href="/timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">A股择时</a>
+      <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;">美股择时</a>
+      <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
+    </div>
+  </div>
+
+  <!-- Error banner -->
+  <div id="error-banner" class="error-banner hidden"></div>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="loading-overlay hidden">
+    <div style="text-align:center;">
+      <div class="loading-spinner" style="margin:0 auto 16px;"></div>
+      <div id="loading-status" style="font-size:14px;color:var(--muted);margin-bottom:8px;">正在连接服务器...</div>
+      <div id="loading-time" style="font-size:22px;font-weight:700;color:var(--accent);">—</div>
+      <div style="margin-top:10px;width:260px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+        <div id="loading-progress-bar" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width .3s;"></div>
       </div>
     </div>
+  </div>
 
-    <div class="controls-bar">
-      <div class="control-group">
-        <label>指数策略</label>
-        <select id="strategy-select" onchange="onStrategyChange()"></select>
-      </div>
-      <div class="control-group">
-        <label>对照基准</label>
-        <select id="benchmark-select" onchange="runBacktest()">
-          <option value="csi1000">CSI 1000</option>
-          <option value="chinext">创业板指数</option>
-          <option value="star50">科创50指数</option>
-        </select>
-      </div>
-      <div class="control-group">
-        <label>起始日期</label>
-        <input type="date" id="start-date" />
-      </div>
-      <div class="control-group">
-        <label>结束日期</label>
-        <input type="date" id="end-date" />
-      </div>
-      <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
+  <!-- Controls -->
+  <div class="controls-bar">
+    <button class="period-btn active" data-months="all" onclick="setQuickPeriod('all')">全部</button>
+    <button class="period-btn" data-months="60"  onclick="setQuickPeriod(60)">近五年</button>
+    <button class="period-btn" data-months="36"  onclick="setQuickPeriod(36)">近三年</button>
+    <button class="period-btn" data-months="12"  onclick="setQuickPeriod(12)">近一年</button>
+    <button class="period-btn" data-months="6"   onclick="setQuickPeriod(6)">近半年</button>
+    <button class="period-btn" data-months="3"   onclick="setQuickPeriod(3)">近一季</button>
+    <button class="period-btn" data-months="1"   onclick="setQuickPeriod(1)">近一月</button>
+    <div class="controls-sep"></div>
+    <label style="font-size:12px;color:var(--muted);">开始</label>
+    <input type="date" id="start-date" class="date-input" onchange="clearPeriodActive()" />
+    <label style="font-size:12px;color:var(--muted);">结束</label>
+    <input type="date" id="end-date"   class="date-input" onchange="clearPeriodActive()" />
+    <button class="btn btn-primary" onclick="runAllBacktests()">运行回测</button>
+    <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index">↻ 刷新指数/ETF数据</button>
+    <span id="index-update-msg" style="font-size:12px;color:var(--muted);"></span>
+  </div>
+
+  <!-- 3-column index grid -->
+  <div class="indices-grid" id="indices-grid"></div>
+
+  <div class="section-card" id="changelog-section">
+    <div class="section-header">
+      <div class="section-title">策略更新日志</div>
+      <div style="font-size:12px;color:var(--muted);">突破版本完成 changelog、规则审计和前端可见性检查后，才会出现在这里</div>
     </div>
+    <div class="changelog-grid" id="changelog-grid"></div>
+  </div>
 
-    <div id="error-banner" class="error-banner hidden"></div>
-    <div id="loading" class="loading-overlay hidden"><div class="loading-spinner"></div></div>
-
-    <div class="summary-grid" id="signal-summary-grid"></div>
-
-    <div class="panel">
-      <div class="panel-title">择时参数</div>
-      <div class="factor-grid" id="factor-grid"></div>
+  <!-- Trade history -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">买卖交易记录</div>
+      <select id="trade-strategy-select" class="ctrl-select" onchange="renderTradeHistory()"></select>
     </div>
-
-    <div class="section-card">
-      <div class="section-header">
-        <div>
-          <div style="font-size:20px;font-weight:700;" id="detail-title">指数策略详情</div>
-          <div class="muted" id="detail-subtitle"></div>
-        </div>
-      </div>
-      <div class="metrics-row" id="metrics-row"></div>
-      <div class="chart-box" id="chart-main"></div>
-    </div>
-
-    <div class="section-card">
-      <div class="section-header">
-        <div style="font-size:20px;font-weight:700;">当前指标快照</div>
-      </div>
-      <table>
-        <tbody id="snapshot-body"></tbody>
-      </table>
-    </div>
-
-    <div class="section-card">
-      <div class="section-header">
-        <div style="font-size:20px;font-weight:700;">最近信号与交易</div>
-      </div>
+    <div style="overflow-x:auto;">
       <table>
         <thead>
           <tr>
-            <th>日期</th><th>动作</th><th>持仓</th><th>收盘价</th><th>得分</th><th>原因</th>
+            <th>日期</th><th>动作</th><th>ETF代码</th><th>成交价</th><th>成本价</th><th>最新价</th><th>数量</th><th>成交金额</th><th>手续费</th>
+            <th>佣金</th><th>印花税</th><th>过户费</th><th>滑点成本</th><th>封板</th><th>顺延天数</th>
+            <th>持仓总额</th><th>单笔盈亏</th><th>收益率</th><th>策略净值</th>
           </tr>
         </thead>
-        <tbody id="signals-body"></tbody>
+        <tbody id="trade-history-body">
+          <tr><td colspan="19" style="color:var(--muted);text-align:center;">数据加载中...</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
 
-  <script>
-    const charts = {};
-    let timingInfo = null;
-    let strategyList = [];
-    let factorConfig = null;
-    let backtestData = null;
-    let summaryData = [];
-    let backtestRequestSeq = 0;
+</div>
 
-    function applyChartOption(chart, option) {
-      if (!chart) return;
-      requestAnimationFrame(() => {
-        chart.resize();
-        chart.setOption(option, true);
-        chart.resize();
+<div class="modal-overlay hidden" id="trade-detail-modal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeTradeDetails()">×</button>
+    <h3 id="trade-detail-title">ETF交易明细</h3>
+    <div id="trade-detail-content"></div>
+  </div>
+</div>
+
+<script>
+  const COLORS = ['#0984e3', '#6c5ce7', '#e17055'];
+
+  let strategyList = [];
+  let allData      = {};   // strategyId -> backtest JSON
+  let paramConfigsByStrategy = {};
+  let timingInfo   = null;
+  let _loadingTimer = null;
+  let _loadStartTime = 0;
+  const charts = {};
+
+  function fmtDelta(v, digits = 2) {
+    if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+    const n = Number(v);
+    return `${n > 0 ? '+' : ''}${n.toFixed(digits)}`;
+  }
+
+  function renderChangeLog() {
+    const grid = document.getElementById('changelog-grid');
+    if (!grid) return;
+    const items = strategyList.filter(s => s.changelog_title || s.changelog_summary || (s.changelog_bullets || []).length);
+    if (!items.length) {
+      grid.innerHTML = '<div style="color:var(--muted);font-size:13px;">当前暂无需要公告的突破版本更新。</div>';
+      return;
+    }
+    grid.innerHTML = items.map((s) => {
+      const delta = s.performance_delta || {};
+      const deltaChips = [];
+      if (delta.cumulative_return_diff != null) deltaChips.push(`<span class="delta-chip">累积净值 ${fmtDelta(delta.cumulative_return_diff, 4)}</span>`);
+      if (delta.annual_return_diff != null) deltaChips.push(`<span class="delta-chip">年化收益 ${fmtDelta(delta.annual_return_diff, 2)}%</span>`);
+      if (delta.max_drawdown_improvement != null) deltaChips.push(`<span class="delta-chip">最大回撤 ${fmtDelta(delta.max_drawdown_improvement, 2)} pct</span>`);
+      if (delta.final_capital_diff != null) deltaChips.push(`<span class="delta-chip">期末资金 ${fmtDelta(delta.final_capital_diff, 2)}</span>`);
+      const relation = s.supersedes ? `替代旧策略 ${s.supersedes}` : '当前沿用策略';
+      return `
+        <div class="changelog-item">
+          <div class="changelog-kicker">${(s.market_group || 'timing').toUpperCase()} BREAKTHROUGH</div>
+          <div class="changelog-head">
+            <div>
+              <div class="changelog-title">${s.changelog_title || s.name}</div>
+              <div class="changelog-meta">当前策略：${s.name}<br/>${relation}</div>
+            </div>
+            <div class="changelog-meta">累积净值 ${s.cumulative_return ?? '—'}</div>
+          </div>
+          <div class="changelog-summary">${s.changelog_summary || s.description || '—'}</div>
+          <ul class="changelog-list">${(s.changelog_bullets || []).map(item => `<li>${item}</li>`).join('')}</ul>
+          <div class="changelog-delta">${deltaChips.join('')}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  /* ── Loading overlay ── */
+  function showLoading(msg, pct) {
+    const el = document.getElementById('loading');
+    if (el) el.classList.remove('hidden');
+    if (msg) { const s = document.getElementById('loading-status'); if (s) s.textContent = msg; }
+    if (pct != null) { const b = document.getElementById('loading-progress-bar'); if (b) b.style.width = Math.min(100, pct) + '%'; }
+    if (!_loadingTimer) {
+      _loadStartTime = performance.now();
+      _loadingTimer = setInterval(() => {
+        const t = document.getElementById('loading-time'); if (!t) return;
+        const s = (performance.now() - _loadStartTime) / 1000;
+        t.textContent = s >= 60 ? `${Math.floor(s/60)}分${Math.floor(s%60)}秒` : `${s.toFixed(1)}秒`;
+      }, 200);
+    }
+  }
+  function hideLoading() {
+    const el = document.getElementById('loading');
+    if (el) el.classList.add('hidden');
+    if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
+  }
+
+  /* ── Quick period ── */
+  function setQuickPeriod(months) {
+    document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.dataset.months == months));
+    if (months === 'all') {
+      document.getElementById('start-date').value = '';
+      document.getElementById('end-date').value = '';
+    } else {
+      const d = new Date();
+      d.setMonth(d.getMonth() - Number(months));
+      document.getElementById('start-date').value = d.toISOString().split('T')[0];
+      document.getElementById('end-date').value = '';
+    }
+    runAllBacktests();
+  }
+  function clearPeriodActive() {
+    document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  }
+
+  /* ── Badge helper ── */
+  function badgeHTML(action, position) {
+    const on = Number(position) === 1;
+    if (action === 'buy')                      return ['badge-buy',  '▲ 买入'];
+    if (action === 'sell')                     return ['badge-sell', '▼ 卖出'];
+    if (on)                                    return ['badge-hold', '● 持有'];
+    return ['badge-flat', '○ 空仓'];
+  }
+
+  /* ── Value coloring (A股: 红=涨 绿=跌) ── */
+  function valCls(str) {
+    if (!str || str === 'N/A' || str === '—') return 'val-neu';
+    const n = parseFloat(String(str).replace('%', '').replace(/,/g, ''));
+    if (isNaN(n)) return 'val-neu';
+    return n > 0 ? 'val-pos' : n < 0 ? 'val-neg' : 'val-neu';
+  }
+
+  function fmtMoney(v) {
+    if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+    return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function fmtQty(v) {
+    if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+    return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+
+  function fmtPct(v) {
+    if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+    return `${Number(v).toFixed(2)}%`;
+  }
+
+  function fmtSignedMoney(v) {
+    if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+    const n = Number(v);
+    const abs = Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `${n > 0 ? '+' : n < 0 ? '-' : ''}${abs}`;
+  }
+
+  function buildTradeModalDetails(data) {
+    const pos = data.position_snapshot || {};
+    const ts = data.trade_summary || {};
+    const fee = data.fee_info || {};
+    const realism = data.realism_meta || {};
+    const trades = (data.trade_details || []).slice().reverse();
+    const meta = `
+      <div class="trade-modal-meta">
+        <div><strong>持仓状态：</strong>${pos.position_label || '—'}</div>
+        <div><strong>ETF代码：</strong>${pos.etf_code || '—'}</div>
+        <div><strong>当前持仓总额：</strong>${fmtMoney(pos.holding_value)}</div>
+        <div><strong>现金余额：</strong>${fmtMoney(pos.cash_balance)}</div>
+        <div><strong>开仓日期：</strong>${pos.entry_date || '—'}</div>
+        <div><strong>持仓成本价：</strong>${fmtMoney(pos.entry_price)}</div>
+        <div><strong>当前最新价：</strong>${fmtMoney(pos.etf_close)}</div>
+        <div><strong>当前浮盈/亏：</strong><span class="${valCls(pos.unrealized_pnl)}">${fmtSignedMoney(pos.unrealized_pnl)}</span></div>
+        <div><strong>累计已实现盈亏：</strong><span class="${valCls(ts.total_realized_pnl)}">${fmtSignedMoney(ts.total_realized_pnl)}</span></div>
+      </div>
+      ${buildFeeSummary(fee, realism)}
+    `;
+    if (!trades.length) {
+      return `${meta}<div style="color:var(--muted);">暂无买卖记录</div>`;
+    }
+    const rows = trades.map(t => `
+      <div class="trade-modal-block">
+        <div class="trade-modal-head">
+          <strong class="action-${t.action}">${t.action === 'buy' ? `▲ 买入至 ${Math.round((t.target_exposure||0)*100)}% 仓位 [B]` : `▼ 卖出至 ${Math.round((t.target_exposure||0)*100)}% 仓位（原 ${Math.round((t.prev_exposure||0)*100)}%）[S]`}</strong>
+          <span>${t.date || '—'}</span>
+        </div>
+        <div class="trade-modal-sub">
+          成交价 ${fmtMoney(t.trade_price)} · 成本价 ${fmtMoney(t.cost_price)} · 最新价 ${fmtMoney(t.latest_price)} · 数量 ${fmtQty(t.quantity)} · 成交金额 ${fmtMoney(t.trade_amount)} · 手续费 ${fmtMoney(t.fee_amount)}<br/>
+          佣金 ${fmtMoney(t.commission)} · 印花税 ${fmtMoney(t.stamp)} · 过户费 ${fmtMoney(t.transfer)} · 滑点成本 ${fmtMoney(t.slippage_cost)}${t.blocked_by_limit ? ` · <span style="color:var(--red);font-weight:700;">⚠ 封板</span>` : ''}${t.limit_delays != null && t.limit_delays > 0 ? ` · 顺延 ${t.limit_delays} 天` : ''}<br/>
+          ${t.action === 'sell' ? `已实现盈亏 <span class="${valCls(t.realized_pnl)}">${fmtSignedMoney(t.realized_pnl)}</span> · 收益率 <span class="${valCls(t.realized_pnl_pct)}">${fmtPct(t.realized_pnl_pct)}</span>` : `持仓市值 ${fmtMoney(t.holding_value)} · 浮动盈亏 <span class="${valCls(t.unrealized_pnl)}">${fmtSignedMoney(t.unrealized_pnl)}</span>`}
+          ${t.holding_days != null ? `<br/>持仓天数 ${t.holding_days} 天` : ''}
+        </div>
+      </div>
+    `).join('');
+    return `${meta}${rows}`;
+  }
+
+  function buildFeeSummary(fee, realism) {
+    if (!fee || Object.keys(fee).length === 0) return '';
+    const realismRows = Object.entries(realism || {})
+      .filter(([k, v]) => v !== null && v !== undefined && v !== '')
+      .map(([k, v]) => `<div><strong>${k}：</strong>${typeof v === 'number' ? Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 6 }) : String(v)}</div>`)
+      .join('');
+    return `
+      <div class="fee-summary">
+        <div class="fee-summary-title">真实交易费用合计</div>
+        <div class="fee-summary-grid">
+          <div><span>佣金合计</span><strong>${fmtMoney(fee.commission_total)}</strong></div>
+          <div><span>印花税合计</span><strong>${fmtMoney(fee.stamp_total)}</strong></div>
+          <div><span>过户费合计</span><strong>${fmtMoney(fee.transfer_total)}</strong></div>
+          <div><span>滑点成本合计</span><strong>${fmtMoney(fee.slippage_total)}</strong></div>
+          <div><span>现金利息合计</span><strong>${fmtMoney(fee.cash_interest_total)}</strong></div>
+          <div><span>涨跌停封板次数</span><strong>${fee.limit_block_count ?? 0}</strong></div>
+        </div>
+        ${realismRows ? `
+          <details class="realism-details">
+            <summary>真实规则参数（realism_meta）</summary>
+            <div class="realism-grid">${realismRows}</div>
+          </details>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  function showTradeDetails(sid) {
+    const data = allData[sid];
+    if (!data) return;
+    const strategy = strategyList.find(s => s.id === sid) || {};
+    const title = document.getElementById('trade-detail-title');
+    if (title) title.textContent = `${strategy.index_name || strategy.name || sid} · ETF交易明细`;
+    const content = document.getElementById('trade-detail-content');
+    if (content) content.innerHTML = buildTradeModalDetails(data);
+    document.getElementById('trade-detail-modal')?.classList.remove('hidden');
+  }
+
+  function closeTradeDetails() {
+    document.getElementById('trade-detail-modal')?.classList.add('hidden');
+  }
+
+  /* ── Build scaffold for 3 columns ── */
+  function buildIndexGrid() {
+    const grid = document.getElementById('indices-grid');
+    grid.innerHTML = strategyList.map((s, i) => `
+      <div class="index-card" id="card-${s.id}">
+        <div class="card-header">
+          <div class="card-title-row">
+            <div class="card-title">${s.index_name || s.name}</div>
+            <div class="card-desc">${s.name}</div>
+          </div>
+        </div>
+        <div class="signal-bar">
+          <div class="signal-main">
+            <span class="signal-label">当前信号</span>
+            <span class="signal-badge badge-flat" id="badge-${s.id}">○ 等待中</span>
+          </div>
+          <div class="signal-actions">
+            <div class="trade-detail-entry" id="trade-detail-entry-${s.id}">
+              <button class="trade-detail-trigger" onclick="showTradeDetails('${s.id}')">
+                <span>查看ETF交易明细</span>
+                <span id="inline-trade-summary-${s.id}">最近交易 —</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="metrics-strip" id="metrics1-${s.id}">
+          <div class="metric-cell"><div class="lbl">累积净值</div><div class="val val-neu" id="m-nav-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">区间收益</div><div class="val val-neu" id="m-tot-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">年化收益</div><div class="val val-neu" id="m-ann-${s.id}">—</div></div>
+        </div>
+        <div class="metrics-strip" id="metrics2-${s.id}">
+          <div class="metric-cell"><div class="lbl">最大回撤</div><div class="val val-neu" id="m-mdd-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">月度胜率</div><div class="val val-neu" id="m-wr-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">收益/回撤比</div><div class="val val-neu" id="m-cal-${s.id}">—</div></div>
+        </div>
+        <div class="split-metrics" id="split-${s.id}">
+          <div class="split-cell"><div class="split-label">近半年收益</div><div class="split-value val-neu" id="w-6m-ret-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近半年回撤</div><div class="split-value val-neu" id="w-6m-mdd-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近一季收益</div><div class="split-value val-neu" id="w-1q-ret-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近一月收益</div><div class="split-value val-neu" id="w-1m-ret-${s.id}">—</div></div>
+        </div>
+        <div class="card-footer" id="window-ranges-${s.id}" style="border-top:none;border-bottom:1px solid var(--border);background:#fafcff;">—</div>
+        <div class="position-strip" id="position-${s.id}">
+          <div class="position-item"><div class="lbl">初始资金</div><div class="val val-neu" id="p-init-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">当前持仓总额</div><div class="val val-neu" id="p-hold-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">ETF持仓数量</div><div class="val val-neu" id="p-qty-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">当前浮盈/亏</div><div class="val val-neu" id="p-unreal-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">累计已实现盈亏</div><div class="val val-neu" id="p-real-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">ETF代码</div><div class="val val-neu" id="p-etf-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">持仓成本价</div><div class="val val-neu" id="p-cost-${s.id}">—</div></div>
+          <div class="position-item"><div class="lbl">当前最新价</div><div class="val val-neu" id="p-last-${s.id}">—</div></div>
+        </div>
+        <div class="chart-col-wrap" id="chart-wrap-${s.id}">
+          <div class="col-loading" id="col-loading-${s.id}">加载中...</div>
+          <div class="col-chart-inner hidden" id="chart-${s.id}"></div>
+        </div>
+        <div class="formula-section" id="formula-section-${s.id}">
+          <div class="formula-title">策略原理与数学公式</div>
+          <div class="formula-summary" id="formula-summary-${s.id}">加载中...</div>
+          <div id="formula-blocks-${s.id}"></div>
+          <div id="shared-formula-blocks-${s.id}"></div>
+        </div>
+        <div class="param-section" id="param-section-${s.id}">
+          <div class="param-header">
+            <div class="param-title">${s.index_name || s.name} 参数调整</div>
+            <button class="btn btn-primary" onclick="runSingleBacktest('${s.id}')">应用并重跑</button>
+          </div>
+          <div class="factor-grid" id="factor-grid-${s.id}">
+            <div style="color:var(--muted);font-size:13px;">参数加载中...</div>
+          </div>
+        </div>
+        <div class="card-footer" id="footer-${s.id}">—</div>
+      </div>
+    `).join('');
+
+    const opts = strategyList.map(s => `<option value="${s.id}">${s.index_name || s.name}</option>`).join('');
+    document.getElementById('trade-strategy-select').innerHTML = opts;
+  }
+
+  /* ── Render one column with data ── */
+  function renderColumn(sid, data, color) {
+    if (!data) return;
+    const m   = data.metrics || {};
+    const lat = data.signal_summary || {};
+    const pos = data.position_snapshot || {};
+    const ts  = data.trade_summary || {};
+
+    // Badge
+    const [cls, txt] = badgeHTML(lat.current_action, lat.current_position);
+    const badge = document.getElementById(`badge-${sid}`);
+    if (badge) { badge.className = `signal-badge ${cls}`; badge.textContent = txt; }
+
+    // Metrics
+    const ann = m.annual_return ?? '—';
+    const mdd = m.max_drawdown ?? '—';
+    const tot = m.total_return_pct ?? '—';
+    const nav = m.cumulative_return != null ? String(m.cumulative_return) : '—';
+    const wr  = ((data.win_rate || 0) * 100).toFixed(1) + '%';
+    const cal = m.calmar_ratio != null ? String(m.calmar_ratio) : '—';
+
+    function set(id, val, cls) { const el = document.getElementById(id); if (el) { el.textContent = val; el.className = `val ${cls}`; } }
+    set(`m-nav-${sid}`, nav,  valCls(parseFloat(nav) - 1 > 0 ? '+' : nav));
+    set(`m-tot-${sid}`, tot,  valCls(tot));
+    set(`m-ann-${sid}`, ann,  valCls(ann));
+    set(`m-mdd-${sid}`, mdd,  valCls(mdd));
+    set(`m-wr-${sid}`,  wr,   'val-neu');
+    set(`m-cal-${sid}`, cal,  valCls(cal));
+
+    set(`p-init-${sid}`, fmtMoney(data.initial_capital), 'val-neu');
+    set(`p-hold-${sid}`, fmtMoney(pos.holding_value), valCls(pos.holding_value));
+    set(`p-qty-${sid}`, fmtQty(pos.holding_units), 'val-neu');
+    set(`p-unreal-${sid}`, pos.unrealized_pnl == null ? '—' : fmtMoney(pos.unrealized_pnl), valCls(pos.unrealized_pnl));
+    set(`p-real-${sid}`, fmtMoney(ts.total_realized_pnl), valCls(ts.total_realized_pnl));
+    set(`p-etf-${sid}`, pos.etf_code || '—', 'val-neu');
+    set(`p-cost-${sid}`, pos.entry_price == null ? '—' : fmtMoney(pos.entry_price), 'val-neu');
+    set(`p-last-${sid}`, pos.etf_close == null ? '—' : fmtMoney(pos.etf_close), 'val-neu');
+
+    const windows = data.interval_windows || {};
+    const recent6m = windows.recent_6m?.metrics || {};
+    const recent1q = windows.recent_1q?.metrics || {};
+    const recent1m = windows.recent_1m?.metrics || {};
+    function setSplit(id, val, cls) {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = val; el.className = `split-value ${cls}`; }
+    }
+    setSplit(`w-6m-ret-${sid}`, recent6m.total_return_pct || '—', valCls(recent6m.total_return_pct));
+    setSplit(`w-6m-mdd-${sid}`, recent6m.max_drawdown || '—', valCls(recent6m.max_drawdown));
+    setSplit(`w-1q-ret-${sid}`, recent1q.total_return_pct || '—', valCls(recent1q.total_return_pct));
+    setSplit(`w-1m-ret-${sid}`, recent1m.total_return_pct || '—', valCls(recent1m.total_return_pct));
+
+    const rangeEl = document.getElementById(`window-ranges-${sid}`);
+    if (rangeEl) {
+      const parts = [
+        ['近半年', windows.recent_6m],
+        ['近一季', windows.recent_1q],
+        ['近一月', windows.recent_1m],
+      ].map(([label, win]) => {
+        const train = win?.training_range || {};
+        const test = win?.test_range || {};
+        const trainText = train.start && train.end ? `${train.start} → ${train.end}` : '无更早训练历史';
+        const testText = test.start && test.end ? `${test.start} → ${test.end}` : '—';
+        return `<div><strong>${label}</strong>：训练历史 ${trainText}；测试区间 ${testText}</div>`;
       });
+      rangeEl.innerHTML = parts.join('');
     }
 
-    function formatSignal(action, position) {
-      const isOn = Number(position) === 1;
-      return `<span class="signal-pill ${isOn ? 'signal-on' : 'signal-off'}">${action || (isOn ? 'hold' : 'flat')}</span>`;
+    const inlineSummary = document.getElementById(`inline-trade-summary-${sid}`);
+    if (inlineSummary) {
+      inlineSummary.textContent = `最近交易 ${data.trade_details?.length ? (data.trade_details[data.trade_details.length - 1].date || '—') : '—'}`;
     }
 
-    function renderMetricsRow(data) {
-      const m = data.metrics || {};
-      const cards = [
-        { label: '累积净值', value: m.cumulative_return ?? '—' },
-        { label: '年化收益', value: m.annual_return ?? '—' },
-        { label: '最大回撤', value: m.max_drawdown ?? '—', sub: `${m.max_dd_start || '—'} → ${m.max_dd_end || '—'}` },
-        { label: '月度胜率', value: ((data.win_rate || 0) * 100).toFixed(1) + '%' },
-        { label: '收益/回撤比', value: m.calmar_ratio ?? '—' },
-        { label: '最终资金', value: m.final_capital ?? '—' },
-        { label: '总收益率', value: m.total_return_pct ?? '—' },
-        { label: '年化Alpha', value: m.annual_alpha ?? '—' },
-      ];
-      document.getElementById('metrics-row').innerHTML = cards.map(c => `
-        <div class="metric-mini">
-          <div class="label">${c.label}</div>
-          <div class="value">${c.value}</div>
-          ${c.sub ? `<div class="muted">${c.sub}</div>` : ''}
-        </div>
-      `).join('');
+    // Footer
+    const dr = data.date_range || {};
+    const etfLabel = [pos.etf_name, pos.etf_code].filter(Boolean).join(' ');
+    const footer = document.getElementById(`footer-${sid}`);
+    if (footer) footer.innerHTML = `<strong>当前：</strong>${lat.current_reason || '—'}${etfLabel ? ` · <strong>ETF:</strong>${etfLabel}` : ''}<span style="float:right;color:var(--muted);font-size:11px;">${dr.start || ''}→${dr.end || ''}</span>`;
+
+    document.getElementById(`col-loading-${sid}`)?.classList.add('hidden');
+    const chartEl = document.getElementById(`chart-${sid}`);
+    chartEl?.classList.remove('hidden');
+
+    // Chart: must init/resize after the container becomes visible, otherwise ECharts
+    // may measure a near-zero box and render only in the top-left corner.
+    buildChart(sid, data, color);
+  }
+
+  /* ── ECharts per column ── */
+  function buildChart(sid, data, color) {
+    const dom = document.getElementById(`chart-${sid}`);
+    if (!dom) return;
+    if (!charts[sid]) {
+      charts[sid] = echarts.init(dom);
+    } else {
+      charts[sid].resize();
     }
 
-    function renderSummaryGrid() {
-      const grid = document.getElementById('signal-summary-grid');
-      grid.innerHTML = (summaryData || []).map(item => `
-        <div class="summary-card">
-          <h3>${item.index_name}</h3>
-          <div style="margin-bottom:10px;">${formatSignal(item.action, item.position)}</div>
-          <div class="muted" style="margin-bottom:6px;">最近信号日期: ${item.date || '—'}</div>
-          <div class="muted" style="margin-bottom:6px;">当前净值: <b>${item.nav == null ? '—' : Number(item.nav).toFixed(4)}</b></div>
-          <div style="font-size:14px;line-height:1.7;">${item.reason_summary || '—'}</div>
-        </div>
-      `).join('');
-    }
+    const curve = data.equity_curve || [];
+    const allTrades = data.all_trades || [];
+    const dates = curve.map(d => d.date);
+    const etfPricesRaw = curve.map(d => d.etf_close != null ? Number(d.etf_close) : (d.close != null ? Number(d.close) : null));
+    const navLine = curve.map(d => d.value != null ? Number(d.value) : null);
 
-    function renderFactorPanel() {
-      const grid = document.getElementById('factor-grid');
-      const params = factorConfig?.parameters || [];
-      grid.innerHTML = params.map(p => `
+    // Build daily exposure series via forward-fill from trade events
+    const tradeByDate = {};
+    allTrades.forEach(t => { tradeByDate[t.date] = t.target_exposure || 0; });
+    let curExp = 0;
+    const exposureData = dates.map(d => {
+      if (tradeByDate[d] !== undefined) curExp = tradeByDate[d];
+      return curExp;
+    });
+    const expBarData = exposureData.map(v => ({
+      value: v,
+      itemStyle: { color: v >= 0.8 ? '#d63031' : v >= 0.5 ? '#e17055' : v >= 0.2 ? '#fdcb6e' : '#dfe6e9' },
+    }));
+
+    const buyPts = [], sellPts = [];
+    allTrades.forEach(t => {
+      const y = t.etf_close != null ? Number(t.etf_close) : (t.latest_price != null ? Number(t.latest_price) : null);
+      if (y == null || Number.isNaN(y)) return;
+      const expPct = Math.round((t.target_exposure || 0) * 100);
+      const prevPct = Math.round((t.prev_exposure || 0) * 100);
+      const pt = {
+        value: [t.date, y],
+        tradeData: t,
+        label: {
+          show: true,
+          formatter: t.action === 'buy' ? 'B' : 'S',
+          position: t.action === 'buy' ? 'bottom' : 'top',
+          fontWeight: 'bold', fontSize: 10,
+          color: t.action === 'buy' ? '#d63031' : '#00b894',
+        },
+      };
+      if (t.action === 'buy') buyPts.push(pt); else sellPts.push(pt);
+    });
+
+    const opt = {
+      animation: false,
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        formatter: ps => {
+          if (!ps.length) return '';
+          const lines = [ps[0].axisValue];
+          ps.forEach(p => {
+            if (p.seriesName === 'ETF真实价格') lines.push(`ETF收盘价：${p.value != null ? Number(p.value).toFixed(4) : '—'}`);
+            if (p.seriesName === '持仓水位') lines.push(`持仓水位：${Math.round((p.value || 0) * 100)}%`);
+            if (p.seriesName === '策略净值') lines.push(`策略净值：${p.value != null ? Number(p.value).toFixed(4) : '—'}`);
+            if (p.seriesName === '买入' || p.seriesName === '卖出') {
+              const t = p.data && p.data.tradeData;
+              if (t) {
+                const expPct = Math.round((t.target_exposure || 0) * 100);
+                const prevPct = Math.round((t.prev_exposure || 0) * 100);
+                if (t.action === 'buy') {
+                  lines.push(`▲ 买入至 ${expPct}% 仓位（原 ${prevPct}%）`);
+                  if (t.quantity != null && t.quantity > 0) lines.push(`股数 ${Math.round(t.quantity)} 股，成本 ¥${t.trade_price != null ? Number(t.trade_price).toFixed(4) : '—'}，消耗 ¥${t.trade_amount != null ? Number(t.trade_amount).toFixed(2) : '—'}`);
+                } else {
+                  lines.push(`▼ 卖出至 ${expPct}% 仓位（原 ${prevPct}%）`);
+                  if (t.quantity != null && t.quantity > 0) lines.push(`股数 ${Math.round(t.quantity)} 股，回收 ¥${t.trade_amount != null ? Number(t.trade_amount).toFixed(2) : '—'}`);
+                }
+              }
+            }
+          });
+          return lines.join('<br/>');
+        },
+      },
+      legend: {
+        top: 0,
+        right: 10,
+        data: [
+          { name: 'ETF真实价格' },
+          { name: '持仓水位' },
+          { name: '策略净值' },
+          { name: '买入' },
+          { name: '卖出' },
+        ],
+        textStyle: { fontSize: 11 },
+      },
+      grid: [
+        { left: 58, right: 12, top: 28, height: '34%' },
+        { left: 58, right: 12, top: '40%', height: '14%' },
+        { left: 58, right: 12, top: '59%', height: '28%' },
+      ],
+      xAxis: [
+        { type: 'category', data: dates, boundaryGap: false, axisLabel: { show: false } },
+        { type: 'category', data: dates, boundaryGap: true, gridIndex: 1, axisLabel: { show: false } },
+        {
+          type: 'category', data: dates, boundaryGap: false, gridIndex: 2,
+          axisLabel: { fontSize: 10, rotate: 30, interval: Math.max(0, Math.floor(dates.length / 5) - 1) },
+        },
+      ],
+      yAxis: [
+        { type: 'value', scale: true, axisLabel: { fontSize: 10, formatter: v => Number(v).toFixed(2) } },
+        {
+          type: 'value', min: 0, max: 1, gridIndex: 1,
+          axisLabel: { fontSize: 9, formatter: v => Math.round(v * 100) + '%' },
+          splitLine: { lineStyle: { type: 'dashed', opacity: 0.5 } },
+          name: '仓位', nameTextStyle: { fontSize: 9, color: '#636e72' },
+        },
+        { type: 'value', scale: true, gridIndex: 2, axisLabel: { fontSize: 10, formatter: v => Number(v).toFixed(4) } },
+      ],
+      series: [
+        {
+          name: 'ETF真实价格',
+          type: 'line',
+          data: etfPricesRaw,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: { color: color, width: 2 },
+          areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{ offset: 0, color: color + '30' }, { offset: 1, color: color + '05' }] } },
+        },
+        {
+          name: '买入',
+          type: 'scatter',
+          data: buyPts,
+          symbol: 'triangle',
+          symbolSize: 11,
+          itemStyle: { color: '#d63031' },
+          z: 10,
+        },
+        {
+          name: '卖出',
+          type: 'scatter',
+          data: sellPts,
+          symbol: 'triangleDown',
+          symbolSize: 11,
+          itemStyle: { color: '#00b894' },
+          z: 10,
+        },
+        {
+          name: '持仓水位',
+          type: 'bar',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: expBarData,
+          barMaxWidth: 10,
+          z: 5,
+        },
+        {
+          name: '策略净值',
+          type: 'line',
+          xAxisIndex: 2,
+          yAxisIndex: 2,
+          data: navLine,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: { color: '#2d3436', width: 2 },
+        },
+      ],
+    };
+    charts[sid].setOption(opt, true);
+  }
+
+  function renderFormulaBlocks(sid, blocks, targetId) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    el.innerHTML = (blocks || []).map(b => `
+      <div class="formula-block">
+        <div class="formula-block-title">${b.title || '公式'}</div>
+        <div class="formula-expr">${b.expression || '—'}</div>
+        <div class="formula-note">${b.explanation || ''}</div>
+      </div>
+    `).join('');
+  }
+
+  function renderParamsForStrategy(sid) {
+    const cfg = paramConfigsByStrategy[sid] || {};
+    const params = cfg.parameters || [];
+    const principleEl = document.getElementById(`formula-summary-${sid}`);
+    if (principleEl) principleEl.textContent = cfg.principle_summary || cfg.description || '—';
+    renderFormulaBlocks(sid, cfg.formula_blocks || [], `formula-blocks-${sid}`);
+    renderFormulaBlocks(sid, cfg.shared_exposure_blocks || [], `shared-formula-blocks-${sid}`);
+
+    const grid = document.getElementById(`factor-grid-${sid}`);
+    if (!grid) return;
+    grid.innerHTML = params.length ? params.map(p => {
+      if (p.type === 'timing_select') {
+        return `
+          <div class="factor-item">
+            <div class="factor-name">${p.label}</div>
+            <div class="factor-desc">${p.description}</div>
+            <div class="slider-row">
+              <select class="ctrl-select factor-slider" data-strategy="${sid}" data-key="${p.key}" onchange="updateSlider(this)">
+                ${(p.options || []).map(opt => `<option value="${opt.value}" ${String(opt.value) === String(p.default) ? 'selected' : ''}>${opt.label}</option>`).join('')}
+              </select>
+              <span class="slider-val" id="val-${sid}-${p.key}">${p.default}${p.unit || ''}</span>
+            </div>
+          </div>
+        `;
+      }
+      return `
         <div class="factor-item">
           <div class="factor-name">${p.label}</div>
           <div class="factor-desc">${p.description}</div>
           <div class="slider-row">
-            <input type="range" class="factor-slider" data-key="${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}" oninput="updateSliderValue(this)" />
-            <span class="slider-value" id="val-${p.key}">${p.default}${p.unit || ''}</span>
+            <input type="range" class="factor-slider" data-strategy="${sid}" data-key="${p.key}"
+              min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}"
+              oninput="updateSlider(this)" />
+            <span class="slider-val" id="val-${sid}-${p.key}">${p.default}${p.unit || ''}</span>
           </div>
         </div>
-      `).join('');
-    }
+      `;
+    }).join('') : '<div style="color:var(--muted);font-size:13px;">该策略暂无可调参数</div>';
+  }
 
-    function updateSliderValue(slider) {
-      const el = document.getElementById('val-' + slider.dataset.key);
-      const unit = (factorConfig?.parameters || []).find(p => p.key === slider.dataset.key)?.unit || '';
-      if (el) el.textContent = slider.value + unit;
+  async function loadParamsForStrategy(sid) {
+    if (!sid) return;
+    try {
+      const resp = await fetch(`/api/timing/params?strategy=${sid}`);
+      paramConfigsByStrategy[sid] = await resp.json();
+      renderParamsForStrategy(sid);
+    } catch (e) {
+      const grid = document.getElementById(`factor-grid-${sid}`);
+      if (grid) grid.innerHTML = `<div style="color:var(--muted)">参数加载失败: ${e.message}</div>`;
     }
+  }
 
-    function buildChart() {
-      const dom = document.getElementById('chart-main');
-      if (!charts.main) charts.main = echarts.init(dom);
-      const curve = backtestData?.equity_curve || [];
-      const activeBenchmark = backtestData?.active_benchmark;
-      const selectedBenchmark = activeBenchmark && Array.isArray(backtestData?.benchmark_curve)
-        ? { name: activeBenchmark.name, curve: backtestData.benchmark_curve }
-        : null;
-      const option = {
-        tooltip: { trigger: 'axis' },
-        legend: { top: 0 },
-        grid: { left: 60, right: 20, top: 35, bottom: 45 },
-        xAxis: { type: 'category', data: curve.map(d => d.date), boundaryGap: false },
-        yAxis: { type: 'value', name: '累积净值' },
-        series: [
-          {
-            name: '策略',
-            type: 'line',
-            data: curve.map(d => d.value),
-            smooth: false,
-            lineStyle: { color: '#6c5ce7', width: 2 },
-          },
-          ...(selectedBenchmark ? [{
-            name: selectedBenchmark.name,
-            type: 'line',
-            data: selectedBenchmark.curve.map(d => d.value),
-            smooth: false,
-            lineStyle: { color: '#95a5a6', type: 'dashed', width: 1.5 },
-          }] : [])
-        ]
-      };
-      applyChartOption(charts.main, option);
+  async function loadParamsForAllStrategies() {
+    await Promise.all(strategyList.map(s => loadParamsForStrategy(s.id)));
+  }
+
+  function updateSlider(el) {
+    const sid = el.dataset.strategy;
+    const key = el.dataset.key;
+    const unit = ((paramConfigsByStrategy[sid]?.parameters || []).find(p => p.key === key)?.unit) || '';
+    const s = document.getElementById(`val-${sid}-${key}`);
+    if (s) s.textContent = el.value + unit;
+  }
+
+  function collectParamsForStrategy(sid) {
+    const params = new URLSearchParams();
+    const container = document.getElementById(`factor-grid-${sid}`);
+    if (!container) return params;
+    container.querySelectorAll('.factor-slider').forEach(el => {
+      params.append(el.dataset.key, el.value);
+    });
+    return params;
+  }
+
+  /* ── Fetch backtest for one strategy ── */
+  async function fetchBacktest(sid) {
+    const start = document.getElementById('start-date').value;
+    const end   = document.getElementById('end-date').value;
+    const qs = collectParamsForStrategy(sid);
+    qs.set('strategy', sid);
+    qs.set('compact', '1');
+    if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
+    const resp = await fetch(`/api/timing/backtest?${qs.toString()}`);
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error || `HTTP ${resp.status}`); }
+    return resp.json();
+  }
+
+  /* ── Run all 3 in parallel ── */
+  async function runAllBacktests() {
+    document.getElementById('error-banner').classList.add('hidden');
+    strategyList.forEach(s => {
+      const loading = document.getElementById(`col-loading-${s.id}`);
+      if (loading) loading.textContent = '加载中...';
+      loading?.classList.remove('hidden');
+      const c = document.getElementById(`chart-${s.id}`); if (c) c.classList.add('hidden');
+    });
+    const results = await Promise.allSettled(strategyList.map(s => fetchBacktest(s.id)));
+    results.forEach((res, i) => {
+      const s = strategyList[i];
+      if (res.status === 'fulfilled') {
+        allData[s.id] = res.value;
+        renderColumn(s.id, res.value, COLORS[i % COLORS.length]);
+      } else {
+        const el = document.getElementById(`col-loading-${s.id}`);
+        if (el) el.textContent = '加载失败: ' + (res.reason?.message || '未知错误');
+      }
+    });
+    renderTradeHistory();
+  }
+
+  async function runSingleBacktest(sid) {
+    const idx = strategyList.findIndex(s => s.id === sid);
+    const loading = document.getElementById(`col-loading-${sid}`);
+    const chartEl = document.getElementById(`chart-${sid}`);
+    if (loading) { loading.textContent = '加载中...'; loading.classList.remove('hidden'); }
+    if (chartEl) chartEl.classList.add('hidden');
+    try {
+      const data = await fetchBacktest(sid);
+      allData[sid] = data;
+      renderColumn(sid, data, COLORS[idx % COLORS.length]);
+    } catch (e) {
+      if (loading) loading.textContent = '加载失败: ' + e.message;
     }
+    renderTradeHistory();
+  }
 
-    function renderSnapshots() {
-      const body = document.getElementById('snapshot-body');
-      const items = backtestData?.indicator_snapshots || {};
-      body.innerHTML = Object.entries(items).map(([k, v]) => `
-        <tr><th style="width:220px;">${k}</th><td>${typeof v === 'number' ? v.toFixed(4) : v}</td></tr>
-      `).join('') || '<tr><td class="muted">暂无指标快照</td></tr>';
+  /* ── Trade history table ── */
+  function renderTradeHistory() {
+    const sid   = document.getElementById('trade-strategy-select')?.value;
+    const data  = allData[sid];
+    const tbody = document.getElementById('trade-history-body');
+    if (!data) { tbody.innerHTML = '<tr><td colspan="19" style="color:var(--muted);text-align:center">暂无数据</td></tr>'; return; }
+    const trades = (data.trade_details || []).slice().reverse();
+    if (!trades.length) {
+      tbody.innerHTML = '<tr><td colspan="19" style="color:var(--muted);text-align:center">暂无买卖记录</td></tr>'; return;
     }
+    tbody.innerHTML = trades.map(t => `
+      <tr>
+        <td>${t.date || '—'}</td>
+        <td class="action-${t.action}">${t.action === 'buy' ? '▲ 买入 [B]' : '▼ 卖出 [S]'}</td>
+        <td>${t.etf_code || '—'}</td>
+        <td>${fmtMoney(t.trade_price)}</td>
+        <td>${fmtMoney(t.cost_price)}</td>
+        <td>${fmtMoney(t.latest_price)}</td>
+        <td>${fmtQty(t.quantity)}</td>
+        <td>${fmtMoney(t.trade_amount)}</td>
+        <td>${fmtMoney(t.fee_amount)}</td>
+        <td>${fmtMoney(t.commission)}</td>
+        <td>${fmtMoney(t.stamp)}</td>
+        <td>${fmtMoney(t.transfer)}</td>
+        <td>${fmtMoney(t.slippage_cost)}</td>
+        <td>${t.blocked_by_limit ? '⚠ 是' : '—'}</td>
+        <td>${t.limit_delays != null && t.limit_delays > 0 ? t.limit_delays : '—'}</td>
+        <td>${fmtMoney(t.holding_value)}</td>
+        <td class="${valCls(t.realized_pnl)}">${t.realized_pnl == null ? '—' : fmtMoney(t.realized_pnl)}</td>
+        <td class="${valCls(t.realized_pnl_pct)}">${t.realized_pnl_pct == null ? '—' : fmtPct(t.realized_pnl_pct)}</td>
+        <td>${(t.nav ?? 0).toFixed(4)}</td>
+      </tr>
+    `).join('');
+  }
 
-    function renderSignals() {
-      const body = document.getElementById('signals-body');
-      const rows = (backtestData?.signals || []).slice(-20).reverse();
-      body.innerHTML = rows.map(item => `
-        <tr>
-          <td>${item.date}</td>
-          <td>${formatSignal(item.action, item.position)}</td>
-          <td>${Number(item.position) === 1 ? '持有' : '空仓'}</td>
-          <td>${Number(item.close || 0).toFixed(2)}</td>
-          <td>${Number(item.score || 0).toFixed(4)}</td>
-          <td>
-            <div style="font-weight:600;margin-bottom:4px;">${item.reason_summary || '—'}</div>
-            <div class="muted">${(item.reason_detail || []).join('；')}</div>
-          </td>
-        </tr>
-      `).join('');
+  /* ── Server ready polling ── */
+  async function waitForServerReady() {
+    while (true) {
+      try {
+        const resp = await fetch('/api/status');
+        const s = await resp.json();
+        if (s.stage === 'ready' || s.ready) return;
+        if (s.stage === 'error') throw new Error('服务器加载失败: ' + s.message);
+        const pctMap = { index_data: 30, strategy_cache: 50, timing_cache: 70 };
+        showLoading(s.message || '正在等待服务器加载...', pctMap[s.stage] || 10);
+      } catch (e) {
+        if (String(e.message).startsWith('服务器加载失败')) throw e;
+        showLoading('等待服务器启动...', 5);
+      }
+      await new Promise(r => setTimeout(r, 600));
     }
+  }
 
-    function renderAll() {
-      if (!backtestData) return;
-      document.getElementById('detail-title').textContent = backtestData.active_index?.name || '指数策略详情';
-      document.getElementById('detail-subtitle').textContent = `${backtestData.date_range.start} → ${backtestData.date_range.end} · 当前基准 ${backtestData.active_benchmark?.name || '—'}`;
-      renderMetricsRow(backtestData);
-      renderSnapshots();
-      renderSignals();
-      buildChart();
-    }
+  /* ── Init ── */
+  async function init() {
+    showLoading('正在连接服务器...', 5);
+    try {
+      await waitForServerReady();
+      showLoading('正在加载策略信息...', 60);
 
-    async function loadTimingInfo() {
-      const resp = await fetch('/api/timing/info');
-      timingInfo = await resp.json();
+      const [infoResp, listResp] = await Promise.all([
+        fetch('/api/timing/info'),
+        fetch('/api/timing/strategy_list'),
+      ]);
+      timingInfo   = await infoResp.json();
+      strategyList = await listResp.json();
+      if (!Array.isArray(strategyList)) strategyList = [];
+
       if (timingInfo?.data_max_date) {
         document.getElementById('data-date-badge').textContent = '数据更新至: ' + timingInfo.data_max_date;
         document.getElementById('start-date').max = timingInfo.data_max_date;
-        document.getElementById('end-date').max = timingInfo.data_max_date;
+        document.getElementById('end-date').max   = timingInfo.data_max_date;
       }
+
+      renderChangeLog();
+      buildIndexGrid();
+      showLoading('正在加载三组参数与公式...', 72);
+      await loadParamsForAllStrategies();
+
+      showLoading('正在运行三组回测...', 82);
+      await runAllBacktests();
+
+    } catch (e) {
+      const eb = document.getElementById('error-banner');
+      eb.textContent = '初始化失败: ' + e.message;
+      eb.classList.remove('hidden');
+    } finally {
+      hideLoading();
+    }
+    window.addEventListener('resize', () => Object.values(charts).forEach(c => c?.resize()));
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('click', function(e) {
+    if (e.target.id === 'trade-detail-modal') closeTradeDetails();
+  });
+
+  /* ── 刷新指数数据 ── */
+  let _indexUpdatePoller = null;
+
+  async function updateIndexData() {
+    const btn = document.getElementById('btn-update-index');
+    const msg = document.getElementById('index-update-msg');
+
+    btn.disabled = true;
+    btn.textContent = '拉取中...';
+    msg.textContent = '正在启动...';
+
+    try {
+      const resp = await fetch('/api/update_index_data', { method: 'POST' });
+      if (!resp.ok) {
+        const e = await resp.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${resp.status}`);
+      }
+    } catch (e) {
+      msg.textContent = '启动失败: ' + e.message;
+      btn.disabled = false;
+      btn.textContent = '↻ 刷新指数/ETF数据';
+      return;
     }
 
-    async function loadStrategyList() {
-      const resp = await fetch('/api/timing/strategy_list');
-      strategyList = await resp.json();
-      const select = document.getElementById('strategy-select');
-      select.innerHTML = (strategyList || []).map(item => `
-        <option value="${item.id}">${item.name}</option>
-      `).join('');
-      if (strategyList.length > 0) select.value = strategyList[0].id;
-    }
-
-    async function loadSummarySignals() {
-      const resp = await fetch('/api/timing/signals');
-      summaryData = await resp.json();
-      renderSummaryGrid();
-    }
-
-    async function onStrategyChange() {
-      const strategy = document.getElementById('strategy-select').value;
-      const resp = await fetch(`/api/timing/params?strategy=${strategy}`);
-      factorConfig = await resp.json();
-      renderFactorPanel();
-      await runBacktest();
-    }
-
-    async function runBacktest() {
-      const requestId = ++backtestRequestSeq;
-      document.getElementById('loading').classList.remove('hidden');
-      document.getElementById('error-banner').classList.add('hidden');
+    // 开始轮询状态
+    if (_indexUpdatePoller) clearInterval(_indexUpdatePoller);
+    _indexUpdatePoller = setInterval(async () => {
       try {
-        const strategy = document.getElementById('strategy-select').value;
-        const benchmark = document.getElementById('benchmark-select').value;
-        const start = document.getElementById('start-date').value;
-        const end = document.getElementById('end-date').value;
-        let params = `strategy=${strategy}&benchmark=${benchmark}`;
-        if (start) params += `&start=${start}`;
-        if (end) params += `&end=${end}`;
-        document.querySelectorAll('.factor-slider').forEach(s => {
-          params += `&${s.dataset.key}=${s.value}`;
-        });
-        const resp = await fetch(`/api/timing/backtest?${params}&compact=1`);
-        if (!resp.ok) {
-          const err = await resp.json();
-          throw new Error(err.error || '请求失败');
+        const resp = await fetch('/api/update_index_data/status');
+        const s = await resp.json();
+        msg.textContent = s.message || '';
+
+        if (s.stage === 'done') {
+          clearInterval(_indexUpdatePoller);
+          _indexUpdatePoller = null;
+          btn.disabled = false;
+          btn.textContent = '↻ 刷新指数/ETF数据';
+          msg.textContent = '✓ 刷新完成，正在重新加载图表...';
+          await runAllBacktests();
+          msg.textContent = '✓ 刷新完成';
+        } else if (s.stage === 'error') {
+          clearInterval(_indexUpdatePoller);
+          _indexUpdatePoller = null;
+          btn.disabled = false;
+          btn.textContent = '↻ 刷新指数/ETF数据';
+          msg.style.color = 'var(--red)';
+          msg.textContent = s.message || '更新失败';
         }
-        const payload = await resp.json();
-        if (requestId !== backtestRequestSeq) return;
-        backtestData = payload;
-        renderAll();
       } catch (e) {
-        if (requestId !== backtestRequestSeq) return;
-        document.getElementById('error-banner').textContent = `回测失败: ${e.message}`;
-        document.getElementById('error-banner').classList.remove('hidden');
-      } finally {
-        if (requestId === backtestRequestSeq) {
-          document.getElementById('loading').classList.add('hidden');
-        }
+        // 网络抖动，继续轮询
       }
-    }
-
-    async function init() {
-      await Promise.all([
-        loadTimingInfo(),
-        loadStrategyList(),
-      ]);
-      await loadSummarySignals();
-      await onStrategyChange();
-      window.addEventListener('resize', () => charts.main && charts.main.resize());
-    }
-
-    document.addEventListener('DOMContentLoaded', init);
-  </script>
+    }, 800);
+  }
+</script>
 </body>
 </html>
