@@ -1633,9 +1633,14 @@ def supplement_csv_incremental(
         # Pop sentinel daily_returns (used for prev-month col 54 backfill)
         daily_returns = row_with_sentinel.pop()
         if daily_returns and stock_data[code]:
-            prev_last = stock_data[code][-1]
-            if prev_last[0].startswith(prev_month_str):
-                backfill_prev_col54[(code, prev_last[0])] = str(daily_returns)
+            # 向后搜索找上月行：当月已有行时 [-1] 指向当月行而非上月行，
+            # 导致回填条件永远不成立，上月的「下周期每天涨跌幅」无法更新。
+            prev_month_row = next(
+                (r for r in reversed(stock_data[code]) if r[0].startswith(prev_month_str)),
+                None,
+            )
+            if prev_month_row:
+                backfill_prev_col54[(code, prev_month_row[0])] = str(daily_returns)
         new_rows.append(row_with_sentinel)
     print(f"  Built {len(new_rows)} {target_str} rows ({skipped} skipped)",
           file=sys.stderr, flush=True)

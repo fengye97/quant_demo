@@ -196,7 +196,7 @@ _SIGNAL_ACTION_LABELS = {
 }
 
 # 磁盘缓存配置：避免每次重启都重新计算回测缓存
-_CACHE_VERSION = 12  # v12: Phase2 walk-forward best_profile 接入；切换 cutoff 或 profile 时递增
+_CACHE_VERSION = 14  # v14: load_data 按 YYYY-MM 归一到最晚交易日，消除月中多次 supplement 产生的伪换仓期
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), '.cache')
 _CACHE_FILE = os.path.join(_CACHE_DIR, 'web_cache.pkl')
 # 单因子回测必须由离线脚本预生成（参见 build_single_factor_cache.py），

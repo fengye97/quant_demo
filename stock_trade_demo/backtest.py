@@ -225,6 +225,17 @@ def load_data(path=None, columns=None):
     if not pd.api.types.is_datetime64_any_dtype(df['交易日期']):
         df['交易日期'] = pd.to_datetime(df['交易日期'])
 
+    # 同月多行归一：每个 YYYY-MM 只保留该月最晚的那个交易日的所有行。
+    # 每次月中 supplement_csv_incremental 会产生不同日期的行（如 5-11 / 5-12 / 5-22 / 5-25），
+    # 不同股票的最新日期可能不同。若直接让回测按「交易日期」分组，这些中间日期会被视为
+    # 独立换仓期，导致同一个自然月内出现多次换仓。
+    # 修复策略：对每个 YYYY-MM 计算「最晚交易日（canonical_date）」，
+    # 只保留该日期的行——其他日期的行（数据落后于最晚快照）一律丢弃，
+    # 与月度换仓一次的语义对齐。注：数据缺失则该月只用有数据的股票，不伪造。
+    _ym = df['交易日期'].dt.to_period('M')
+    _canonical_date = df.groupby(_ym)['交易日期'].transform('max')
+    df = df[df['交易日期'] == _canonical_date].reset_index(drop=True)
+
     # ── 全市场等权累积收益 → 市场牛熊划分 ──
     mkt_ret = df.groupby('交易日期')['涨跌幅'].mean()
     mkt_cum = (1 + mkt_ret).cumprod()
