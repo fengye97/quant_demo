@@ -34,6 +34,7 @@ from walk_forward_train import (  # noqa: E402
     STRATEGY_SPECS,
     TRAINING_CUTOFF,
     _extract_metric_floats,
+    _maybe_apply_us_clean_window,
 )
 
 from index_data import build_index_panel, build_us_index_panel  # noqa: E402
@@ -87,6 +88,9 @@ def _render_md(strategy_id: str, profile: dict, holdout_metrics: dict,
     for k, v in tuned.items():
         lines.append(f'| `{k}` | `{v}` |')
     lines.append('')
+    if strategy_id == 'macro_v32_timing':
+        lines.append('> Regime 说明：`fed_block_weight` 控制 Fed 因子块权重；`restrictive_threshold` 表示 Fed 仍偏紧的判定线；`pivot_relief` 表示政策转松时对危机扣分的缓冲强度。')
+        lines.append('')
 
     lines.append('## 训练区评分（来自 walk-forward 选优阶段）')
     lines.append(f"- 评分公式: `{profile.get('score_formula')}`")
@@ -176,13 +180,34 @@ def main():
         if panel is None:
             print(f"[{sid}] panel 未加载，跳过")
             continue
+        clean_window_meta = None
+        if STRATEGY_SPECS[sid]['panel'] == 'us':
+            panel, clean_window_meta = _maybe_apply_us_clean_window(panel, sid)
         print(f"[{sid}] 评估 holdout (start={HOLDOUT_START.strftime('%Y-%m-%d')}) ...")
+        if clean_window_meta:
+            print(f"  [clean-window] index={clean_window_meta['index_id']} start={clean_window_meta['clean_start']} path={clean_window_meta['preferred_runtime_path']}")
         holdout_metrics, holdout_rows, holdout_window = _evaluate_holdout(sid, profile, panel)
         md = _render_md(sid, profile, holdout_metrics, holdout_rows, holdout_window)
         out_path = os.path.join(OUTPUT_DIR, f'holdout_report_{sid}.md')
         with open(out_path, 'w') as f:
             f.write(md)
+        # 同时落结构化 JSON：web /api/*/latest_signal 直接读，不依赖 md 解析
+        json_payload = {
+            'strategy_id': sid,
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'training_cutoff': profile.get('training_cutoff'),
+            'holdout_start': holdout_window[0].strftime('%Y-%m-%d'),
+            'holdout_end': holdout_window[1].strftime('%Y-%m-%d'),
+            'holdout_bars': holdout_rows,
+            'training_score': profile.get('score'),
+            'training_window_metrics': profile.get('window_metrics', {}),
+            'holdout_metrics': holdout_metrics,
+        }
+        json_path = os.path.join(OUTPUT_DIR, f'holdout_report_{sid}.json')
+        with open(json_path, 'w') as f:
+            json.dump(json_payload, f, ensure_ascii=False, indent=2, default=float)
         print(f"  -> {out_path}")
+        print(f"  -> {json_path}")
         if holdout_metrics is not None:
             print(f"     holdout: calmar={holdout_metrics['calmar']:.3f}  "
                   f"maxDD={holdout_metrics['max_drawdown']:.3%}  "

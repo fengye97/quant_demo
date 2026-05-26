@@ -81,6 +81,59 @@ This is a script-first A-share quantitative stock-selection and backtesting proj
 - Benchmark cache: `stock_trade_demo/.cache/csi1000_monthly.csv`
 - Method A may reference cached factor files under `.cache/chan_factors_v2/`
 
+### 核心数据路径速查（不要再到处 find）
+所有绝对路径都在 `/Users/fatcat/Desktop/quant/` 之下。**编码：A 股 CSV 一律 GBK（`stock_data.csv`、月度文件），其他指数/ETF/宏观 CSV 一律 UTF-8。**
+
+- **A 股月度面板（主数据，所有月度策略都吃它）**
+  - `stock_trade_demo/stock_data.csv` — 全量月度行情 + 因子，按 `(月份, 代码)` 排序，GBK 编码
+  - 更新入口：`get_stock_info.py --mode supplement` 或 `POST /api/update_data`
+- **A 股指数（日线 + 月度）**
+  - `stock_trade_demo/.cache/csi1000_daily.csv` / `csi1000_monthly.csv` / `csi1000_weekly.csv`
+  - `stock_trade_demo/.cache/chinext_daily.csv` / `chinext_monthly.csv`
+  - `stock_trade_demo/.cache/star50_daily.csv` / `star50_monthly.csv`
+- **A 股择时 ETF（前/不复权双份）**
+  - `stock_trade_demo/.cache/timing_etf/csi1000_etf_daily.csv` 与 `csi1000_etf_daily_qfq.csv`
+  - `stock_trade_demo/.cache/timing_etf/chinext_etf_daily.csv` 与 `chinext_etf_daily_qfq.csv`
+  - `stock_trade_demo/.cache/timing_etf/star50_etf_daily.csv` 与 `star50_etf_daily_qfq.csv`
+- **美股指数 + ETF（用于 NASDAQ / S&P500 择时与宏观 v3.2）**
+  - `stock_trade_demo/.cache/nasdaq_daily.csv` / `nasdaq_monthly.csv` / `nasdaq_etf_daily.csv` / `nasdaq_etf_daily_qfq.csv`
+  - `stock_trade_demo/.cache/sp500_daily.csv` / `sp500_monthly.csv` / `sp500_etf_daily.csv` / `sp500_etf_daily_qfq.csv`
+- **择时策略离线产物（walk-forward / best profile / 持仓系列）**
+  - `strategy/best_profile_{csi1000,chinext,star50,nasdaq,sp500,macro_v32}_timing.json`
+  - `strategy/walk_forward_log_*.csv`、`strategy/holdout_report_*.md`
+  - `strategy/factor_signals_v{2,31,32}.csv`、`strategy/backtest_v{2,31,32}_*.csv`
+- **宏观因子（FRED 系列，给 macro_v32 / 美股择时用）**
+  - `data/fred_*.csv`（CPI / FedFundsRate / Treasury10Y / VIX / 等）
+  - `data/_etf_summary.csv` / `data/_fred_summary.csv` / `data/_idx_summary.csv`
+- **A 股估值与情绪因子（仅给 live 页风险面板做提示，不进任何策略仓位）**
+  - `data/a_share_macro/pe_ttm.csv` — 全 A 个股 PE-TTM 中位数 + 10 年分位（AkShare `stock_a_ttm_lyr`）
+  - `data/a_share_macro/cn10y.csv` — 中债国债 10Y（AkShare `bond_china_yield`）
+  - `data/a_share_macro/sse_daily.csv` — 上交所每日 流通市值 / 成交金额 / 流通换手率 / 融资买入额（AkShare `stock_sse_deal_daily` + `stock_margin_sse`）
+  - 生产入口：`scripts/fetch_a_share_macro.py`（拉数据，增量续抓）→ `scripts/build_risk_signals.py`（合成 ERP / 融资占比 / 1y 分位 + 中文风险文案，挂到 csi1000_timing / chinext_timing / star50_timing 的看多风险列表）
+- **离线缓存（Web 启动时直接读，不要在请求里现算）**
+  - `stock_trade_demo/.cache/web_cache.pkl` — 选股策略回测主缓存
+  - `stock_trade_demo/.cache/us_timing/{nasdaq,sp500,macro_v32}_timing.pkl` — 美股择时缓存
+- **实盘记录（不可再生数据，严禁覆盖/删除/seed）**
+  - `data/live_trades.csv` — 见下方"实盘数据保护"段落
+
+### Web 端关键 API（只读视图，所有重计算都在离线脚本里）
+- `GET /api/info` — 当前数据集时间范围 + 默认策略
+- `GET /api/strategy_list` — 已注册的选股策略
+- `GET /api/factors?strategy=...`、`GET /api/factor_overview?strategy=...`
+- `GET /api/backtest?strategy=...&benchmark=...&...` — 选股回测曲线
+- `GET /api/timing/<index_id>?profile=best`、`/api/timing_panel` — 择时卡片数据
+- `POST /api/update_data` + `GET /api/update_data/status` — 触发 + 轮询股票数据更新
+- `POST /api/update_index_data` + `GET /api/update_index_data/status` — 触发 + 轮询指数/ETF 更新
+
+### 数据刷新的标准动作
+所有"数据落后于行情 / 更新数据 / 刷新一下"类需求**统一走 `data-refresh-all` skill**（`.claude/skills/data-refresh-all/SKILL.md`），它会同时刷新股票月度数据 + 指数日/月线 + 择时 ETF 日线，并重建 Web 端的内存缓存。不要绕过它直接手动跑 `get_stock_info.py` 或 `index_data.py`。
+
+### 指数 / ETF 日线同步保护
+- A 股持仓区间、指数对比、以及任何依赖 A 股交易日历的展示，都应以**A 股指数体系**作为唯一交易日历来源：优先使用 `stock_trade_demo/.cache/a_share_calendar_daily.csv` 这份全历史 A 股交易日日历缓存；若不存在，再退回 `stock_trade_demo/.cache/{csi1000,chinext,star50}_daily.csv`。不要用 ETF 日线去替代指数交易日历。
+- `get_index_daily(..., force_refetch=True)` 必须带 freshness guard：如果新抓到的指数日线 `max_date` 早于本地缓存，禁止覆盖缓存；如果日期相同且本地缓存不更差，也应跳过覆盖。
+- `POST /api/update_index_data` 刷新完成前，必须校验 A 股指数日线与对应 ETF 日线的最新日期是否一致；若存在 `index_max_date < etf_max_date`，状态应报错或 warning，禁止静默显示“刷新完成”。
+- 当出现“ETF 已更新到更晚日期，但指数仍停在更早日期”时，先修复指数缓存同步问题，再修改任何基于交易日历的展示逻辑；不要用 ETF 日历临时兜底，以免把持仓区间、日线净值或 benchmark 对齐口径带偏。
+
 ## Current frontend/backend behavior worth preserving
 - The factor panel is driven by strategy metadata from `BaseStrategy.get_factor_metadata()`.
 - Holdings explanations are driven by strategy-level `build_selection_reason(...)` methods.
@@ -147,6 +200,19 @@ If editing them, first confirm whether the user wants them preserved as referenc
     - Indicators, regime state, moving averages, momentum windows, staged-entry state, and any other path-dependent timing state must be computed using the history prior to the selected start date, then only the displayed output may be sliced to the requested interval.
     - Validation-window performance must be computed with capital reset at the window start. Keep the signal path and holdings state from the full-history replay, but report return / annualized / drawdown using only the selected window's standalone capital path.
     - In short: the user may choose what segment to view, but the strategy must "know" the history before that segment. Never treat the visible interval as a cold-start fit window unless the user explicitly asks for that experiment.
+14. **择时策略的最低产品目标：在任意默认验证窗口（近 1 个月 / 近 1 季度 / 近半年）下，策略的累计收益 **和** 最大回撤都必须至少不输 ETF 本身。**
+    - 跑输 ETF（无论是收益跑输还是回撤更深）意味着择时本身没有提供超额价值，等价于「弱化版 buy-and-hold + 多余手续费」，不可作为默认策略发布。
+    - 这条目标优先级高于任何单一指标（Calmar / Sharpe / 全历史净值）。在 walk-forward 与参数搜索的目标函数里，必须显式包含「超额 ETF 收益」与「相对 ETF 回撤」两项约束或权重，而不是只优化 Calmar / Sharpe。
+    - 默认行为：信号空仓不等于全空仓——所有择时策略需要支持 floor exposure（最低底仓）参数，并把 floor 默认设置在能让最坏窗口仍逼近 ETF 的水平。具体 floor 数值由 walk-forward 在「至少不输 ETF」的硬约束下选取。
+    - 这条规则也意味着：纯空仓避险型策略（avg_exposure < 0.3、长牛中大幅跑输 ETF）不应被推送为默认 best_profile，即使其 Calmar 看起来更高。
+15. **实盘交易记录文件受保护，禁止任何自动化覆盖。**
+    - 实盘记录的唯一权威文件是 `/Users/fatcat/Desktop/quant/data/live_trades.csv`。该文件记录用户在真实账户的实际下单情况，是不可再生数据。
+    - 严禁以下操作（无论代码变更、缓存重建、测试脚本、回归、demo 数据填充）：删除、清空、重建、覆盖、回退、合并、迁移结构。
+    - 该文件必须保持在 `.gitignore` 中，**永远不提交到 git**；任何 git 操作（`git checkout`, `git reset`, `git clean` 等）都不得作用于此文件路径。
+    - 如需变更字段结构（新增列等），必须以 **追加列 + 默认值** 的方式做向后兼容迁移，并先在新增 CSV 文件上演练；不允许直接重写主文件。
+    - 实盘起点默认是「空仓」（`actual_position = 0`, `NAV = 1.0`），新的实盘录入是首笔实盘交易；不允许内置任何模拟初始持仓、demo 数据、或种子记录。
+    - `/api/live/*` 后端接口对此文件的写操作必须加文件锁；用户手动删除记录是允许的，自动化删除则禁止。
+    - 任何 Claude 会话开始前如果发现 `data/live_trades.csv` 不存在，只允许创建一个**仅含表头**的空文件，绝不允许填入示例数据。
 
 ### Strategy search guidance
 1. 先读 `STRATEGY_CHANGELOG.md` 和 `todo_list.md` 的已验证结论，再决定新实验，避免重复做已经证伪的方向。

@@ -73,11 +73,12 @@
     .val-neu { color: var(--text); }
 
     /* Split metrics */
-    .split-metrics { display:grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); background:#fafcff; }
+    .split-metrics { display:grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--border); background:#fafcff; }
     .split-cell { padding: 8px 13px; border-right: 1px solid var(--border); }
     .split-cell:last-child { border-right:none; }
-    .split-label { font-size: 10px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; }
-    .split-value { font-size: 13px; font-weight: 700; }
+    .split-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; white-space: nowrap; }
+    .split-value { font-size: 13px; font-weight: 700; line-height: 1.45; }
+    .split-meta { display:block; font-size: 11px; font-weight: 600; margin-top: 2px; }
 
     /* Position strip */
     .position-strip { display: grid; grid-template-columns: repeat(2, 1fr); border-bottom: 1px solid var(--border); }
@@ -178,6 +179,7 @@
       <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
       <a href="/timing" class="btn btn-secondary" style="text-decoration:none;">A股择时</a>
       <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">美股择时</a>
+      <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
       <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
     </div>
   </div>
@@ -206,11 +208,11 @@
 
   <!-- Controls -->
   <div class="controls-bar">
-    <button class="period-btn active" data-months="all" onclick="setQuickPeriod('all')">全部</button>
+    <button class="period-btn" data-months="all" onclick="setQuickPeriod('all')">全部</button>
     <button class="period-btn" data-months="60"  onclick="setQuickPeriod(60)">近五年</button>
     <button class="period-btn" data-months="36"  onclick="setQuickPeriod(36)">近三年</button>
     <button class="period-btn" data-months="12"  onclick="setQuickPeriod(12)">近一年</button>
-    <button class="period-btn" data-months="6"   onclick="setQuickPeriod(6)">近半年</button>
+    <button class="period-btn active" data-months="6"   onclick="setQuickPeriod(6)">近半年</button>
     <button class="period-btn" data-months="3"   onclick="setQuickPeriod(3)">近一季</button>
     <button class="period-btn" data-months="1"   onclick="setQuickPeriod(1)">近一月</button>
     <div class="controls-sep"></div>
@@ -273,6 +275,7 @@
   let strategyList = [];
   let allData      = {};
   let paramConfigsByStrategy = {};
+  let usTimingInfo = null;
 
   function fmtDelta(v, digits = 2) {
     if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
@@ -334,18 +337,19 @@
   }
 
   /* ── Quick period ── */
-  function setQuickPeriod(months) {
+  function setQuickPeriod(months, options = {}) {
+    const { skipRun = false } = options;
     document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.dataset.months == months));
     if (months === 'all') {
       document.getElementById('start-date').value = '';
       document.getElementById('end-date').value = '';
     } else {
-      const d = new Date();
-      d.setMonth(d.getMonth() - Number(months));
-      document.getElementById('start-date').value = d.toISOString().split('T')[0];
+      const anchor = window.usTimingInfo?.data_max_date ? new Date(window.usTimingInfo.data_max_date) : new Date();
+      anchor.setMonth(anchor.getMonth() - Number(months));
+      document.getElementById('start-date').value = anchor.toISOString().split('T')[0];
       document.getElementById('end-date').value = '';
     }
-    runAllBacktests();
+    if (!skipRun) runAllBacktests();
   }
   function clearPeriodActive() {
     document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
@@ -385,6 +389,22 @@
     const abs = Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return `${n > 0 ? '+' : n < 0 ? '-' : ''}${abs}`;
   }
+  function hasMetricValue(v) {
+    return !(v == null || v === '' || v === 'N/A');
+  }
+  function formatWindowSummary(win) {
+    const metrics = win?.metrics || {};
+    const etfSummary = win?.etf_summary || {};
+    const strategyRet = hasMetricValue(metrics.total_return_pct) ? metrics.total_return_pct : '—';
+    const etfRet = etfSummary.return_pct == null ? '—' : fmtPct(etfSummary.return_pct);
+    const excessRet = etfSummary.strategy_excess_pct == null ? '—' : fmtPct(etfSummary.strategy_excess_pct);
+    return `策略 ${strategyRet}<span class="split-meta">ETF ${etfRet} · 超额 ${excessRet}</span>`;
+  }
+  function windowSummaryColorValue(win) {
+    const etfSummary = win?.etf_summary || {};
+    if (hasMetricValue(etfSummary.strategy_excess_pct)) return etfSummary.strategy_excess_pct;
+    return win?.metrics?.total_return_pct;
+  }
 
   /* ── Build grid scaffold ── */
   function buildIndexGrid() {
@@ -421,11 +441,15 @@
           <div class="metric-cell"><div class="lbl">月度胜率</div><div class="val val-neu" id="m-wr-${s.id}">—</div></div>
           <div class="metric-cell"><div class="lbl">收益/回撤比</div><div class="val val-neu" id="m-cal-${s.id}">—</div></div>
         </div>
+        <div class="metrics-strip" id="metrics3-${s.id}">
+          <div class="metric-cell"><div class="lbl">ETF区间收益</div><div class="val val-neu" id="m-etf-ret-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">策略相对ETF超额</div><div class="val val-neu" id="m-excess-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">Beta / 年化Alpha</div><div class="val val-neu" id="m-beta-alpha-${s.id}">—</div></div>
+        </div>
         <div class="split-metrics" id="split-${s.id}">
-          <div class="split-cell"><div class="split-label">近半年收益</div><div class="split-value val-neu" id="w-6m-ret-${s.id}">—</div></div>
-          <div class="split-cell"><div class="split-label">近半年回撤</div><div class="split-value val-neu" id="w-6m-mdd-${s.id}">—</div></div>
-          <div class="split-cell"><div class="split-label">近一季收益</div><div class="split-value val-neu" id="w-1q-ret-${s.id}">—</div></div>
-          <div class="split-cell"><div class="split-label">近一月收益</div><div class="split-value val-neu" id="w-1m-ret-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近半年</div><div class="split-value val-neu" id="w-6m-summary-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近一季</div><div class="split-value val-neu" id="w-1q-summary-${s.id}">—</div></div>
+          <div class="split-cell"><div class="split-label">近一月</div><div class="split-value val-neu" id="w-1m-summary-${s.id}">—</div></div>
         </div>
         <div class="card-footer" id="window-ranges-${s.id}" style="border-top:none;border-bottom:1px solid var(--border);background:#fafcff;">—</div>
         <div class="position-strip" id="position-${s.id}">
@@ -472,6 +496,7 @@
     const lat = data.signal_summary || {};
     const pos = data.position_snapshot || {};
     const ts  = data.trade_summary || {};
+    const etf = data.etf_summary || {};
 
     // Badge
     const [cls, txt] = badgeHTML(lat.current_action, lat.current_position);
@@ -493,6 +518,13 @@
     set(`m-mdd-${sid}`, mdd,  valCls(mdd));
     set(`m-wr-${sid}`,  wr,   'val-neu');
     set(`m-cal-${sid}`, cal,  valCls(cal));
+    const betaText = hasMetricValue(m.beta) ? String(m.beta) : '—';
+    const alphaText = hasMetricValue(m.annual_alpha) ? String(m.annual_alpha) : '—';
+    const betaAlphaText = betaText === '—' && alphaText === '—' ? '—' : `${betaText} / ${alphaText}`;
+    const betaAlphaColorValue = hasMetricValue(m.annual_alpha) ? m.annual_alpha : (hasMetricValue(m.beta) ? m.beta : null);
+    set(`m-etf-ret-${sid}`, etf.return_pct == null ? '—' : fmtPct(etf.return_pct), valCls(etf.return_pct));
+    set(`m-excess-${sid}`, etf.strategy_excess_pct == null ? '—' : fmtPct(etf.strategy_excess_pct), valCls(etf.strategy_excess_pct));
+    set(`m-beta-alpha-${sid}`, betaAlphaText, valCls(betaAlphaColorValue));
 
     set(`p-init-${sid}`,   fmtMoney(data.initial_capital),       'val-neu');
     set(`p-hold-${sid}`,   fmtMoney(pos.holding_value),          valCls(pos.holding_value));
@@ -504,17 +536,13 @@
     set(`p-last-${sid}`,   pos.etf_close  == null ? '—' : fmtMoney(pos.etf_close),   'val-neu');
 
     const windows = data.interval_windows || {};
-    const recent6m = windows.recent_6m?.metrics || {};
-    const recent1q = windows.recent_1q?.metrics || {};
-    const recent1m = windows.recent_1m?.metrics || {};
     function setSplit(id, val, cls) {
       const el = document.getElementById(id);
-      if (el) { el.textContent = val; el.className = `split-value ${cls}`; }
+      if (el) { el.innerHTML = val; el.className = `split-value ${cls}`; }
     }
-    setSplit(`w-6m-ret-${sid}`, recent6m.total_return_pct || '—', valCls(recent6m.total_return_pct));
-    setSplit(`w-6m-mdd-${sid}`, recent6m.max_drawdown || '—', valCls(recent6m.max_drawdown));
-    setSplit(`w-1q-ret-${sid}`, recent1q.total_return_pct || '—', valCls(recent1q.total_return_pct));
-    setSplit(`w-1m-ret-${sid}`, recent1m.total_return_pct || '—', valCls(recent1m.total_return_pct));
+    setSplit(`w-6m-summary-${sid}`, formatWindowSummary(windows.recent_6m), valCls(windowSummaryColorValue(windows.recent_6m)));
+    setSplit(`w-1q-summary-${sid}`, formatWindowSummary(windows.recent_1q), valCls(windowSummaryColorValue(windows.recent_1q)));
+    setSplit(`w-1m-summary-${sid}`, formatWindowSummary(windows.recent_1m), valCls(windowSummaryColorValue(windows.recent_1m)));
 
     const rangeEl = document.getElementById(`window-ranges-${sid}`);
     if (rangeEl) {
@@ -1034,15 +1062,35 @@
       await waitForServerReady();
       showLoading('正在加载策略信息...', 60);
 
-      const listResp = await fetch('/api/us_timing/strategy_list');
+      const [infoResp, listResp] = await Promise.all([
+        fetch('/api/us_timing/info'),
+        fetch('/api/us_timing/strategy_list'),
+      ]);
+      if (!infoResp.ok) {
+        const e = await infoResp.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${infoResp.status}`);
+      }
+      if (!listResp.ok) {
+        const e = await listResp.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${listResp.status}`);
+      }
+      usTimingInfo = await infoResp.json();
+      window.usTimingInfo = usTimingInfo;
       strategyList = await listResp.json();
       if (!Array.isArray(strategyList)) strategyList = [];
+
+      if (usTimingInfo?.data_max_date) {
+        document.getElementById('data-date-badge').textContent = '数据更新至: ' + usTimingInfo.data_max_date;
+        document.getElementById('start-date').max = usTimingInfo.data_max_date;
+        document.getElementById('end-date').max = usTimingInfo.data_max_date;
+      }
 
       renderChangeLog();
       buildIndexGrid();
       showLoading('正在加载参数与公式...', 72);
       await loadParamsForAllStrategies();
 
+      setQuickPeriod(6, { skipRun: true });
       showLoading('正在运行回测...', 82);
       await runAllBacktests();
 

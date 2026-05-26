@@ -18,7 +18,7 @@ class BaseTimingStrategy:
                  slippage_bps=5.0, cash_interest_rate=0.015,
                  commission_rate=0.0001, commission_min=5.0,
                  stamp_tax_rate=0.0, transfer_fee_rate=0.00001,
-                 limit_max_delay_days=5, **params):
+                 limit_max_delay_days=5, base_floor=0.0, **params):
         self.initial_capital = initial_capital
         self.buy_cost = buy_cost
         self.sell_cost = sell_cost
@@ -44,6 +44,7 @@ class BaseTimingStrategy:
         self.stamp_tax_rate = max(float(stamp_tax_rate or 0.0), 0.0)
         self.transfer_fee_rate = max(float(transfer_fee_rate or 0.0), 0.0)
         self.limit_max_delay_days = max(int(limit_max_delay_days or 0), 0)
+        self.base_floor = float(max(min(base_floor or 0.0, 1.0), 0.0))
         self._extra_params = params
 
     def get_display_name(self):
@@ -85,6 +86,7 @@ class BaseTimingStrategy:
             {'key': 'stamp_tax_rate', 'label': '印花税', 'type': 'timing', 'min': 0.0, 'max': 0.002, 'step': 0.0001, 'default': self.stamp_tax_rate, 'unit': '', 'description': 'ETF 双边免征印花税（保留参数仅供股票场景）。'},
             {'key': 'transfer_fee_rate', 'label': '过户费', 'type': 'timing', 'min': 0.0, 'max': 0.0001, 'step': 0.000005, 'default': self.transfer_fee_rate, 'unit': '', 'description': '沪深两市 ETF 现行均收过户费 0.001‰（双边），2025 年起深交所统一对深市 ETF 收取。'},
             {'key': 'limit_max_delay_days', 'label': '涨跌停顺延天数', 'type': 'timing', 'min': 0, 'max': 10, 'step': 1, 'default': self.limit_max_delay_days, 'unit': '日', 'description': '买卖单遇涨跌停封板未成交时，最多顺延的交易日数；超过则丢弃。0 表示不顺延。'},
+            {'key': 'base_floor', 'label': '最低底仓', 'type': 'timing', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': self.base_floor, 'unit': '', 'description': '择时信号未触发或转弱时仍保留的最低 ETF 仓位，保证最坏情况下策略不会大幅跑输 ETF。0 表示完全按信号空仓。'},
         ]
 
     def get_principle_summary(self):
@@ -280,6 +282,14 @@ class BaseTimingStrategy:
             target_exposure = binary_position.astype(float)
 
         target_exposure = target_exposure.fillna(0.0).clip(lower=0.0, upper=1.0).round(4)
+        if self.base_floor > 0:
+            if ready_mask is not None:
+                ready_series = pd.Series(ready_mask, index=df.index).fillna(False).astype(bool)
+            else:
+                ready_series = pd.Series(True, index=df.index)
+            floor_active = ready_series.cummax()
+            floored = target_exposure.clip(lower=self.base_floor)
+            target_exposure = target_exposure.where(~floor_active, floored).round(4)
         prev_exposure = target_exposure.shift(1).fillna(0.0).round(4)
         exposure_change = (target_exposure - prev_exposure).round(4)
 

@@ -17,9 +17,9 @@ def _load_fred_series(name, col):
     return s
 
 
-def _zscore_rolling(s, window=252*5, min_periods=252):
-    mu = s.rolling(window, min_periods=min_periods).mean()
-    sd = s.rolling(window, min_periods=min_periods).std()
+def _zscore_expanding(s, min_periods=252):
+    mu = s.expanding(min_periods=min_periods).mean()
+    sd = s.expanding(min_periods=min_periods).std()
     return ((s - mu) / (sd + 1e-9)).clip(-3, 3)
 
 
@@ -48,7 +48,7 @@ class CSI1000TimingStrategy(BaseTimingStrategy):
                  max_entry_exposure=0.5, probe_entry_exposure=0.25,
                  probe_confirm_days=1, profit_lock_enabled=False,
                  profit_lock_drawdown=0.04, profit_lock_level_1=0.10,
-                 profit_lock_level_2=0.18, profit_lock_level_3=0.28):
+                 profit_lock_level_2=0.18, profit_lock_level_3=0.28, **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -67,6 +67,7 @@ class CSI1000TimingStrategy(BaseTimingStrategy):
             profit_lock_level_1=profit_lock_level_1,
             profit_lock_level_2=profit_lock_level_2,
             profit_lock_level_3=profit_lock_level_3,
+            **kwargs,
         )
         self.breakout_window = int(breakout_window)
         self.exit_window = int(exit_window)
@@ -198,7 +199,7 @@ class Star50TimingStrategy(BaseTimingStrategy):
                  max_entry_exposure=0.5, probe_entry_exposure=0.25,
                  probe_confirm_days=1, profit_lock_enabled=False,
                  profit_lock_drawdown=0.04, profit_lock_level_1=0.10,
-                 profit_lock_level_2=0.18, profit_lock_level_3=0.28):
+                 profit_lock_level_2=0.18, profit_lock_level_3=0.28, **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -217,6 +218,7 @@ class Star50TimingStrategy(BaseTimingStrategy):
             profit_lock_level_1=profit_lock_level_1,
             profit_lock_level_2=profit_lock_level_2,
             profit_lock_level_3=profit_lock_level_3,
+            **kwargs,
         )
         self.breakout_window = int(breakout_window)
         self.exit_window = int(exit_window)
@@ -348,7 +350,7 @@ class ChiNextTimingStrategy(BaseTimingStrategy):
                  max_entry_exposure=0.5, probe_entry_exposure=0.25,
                  probe_confirm_days=1, profit_lock_enabled=False,
                  profit_lock_drawdown=0.04, profit_lock_level_1=0.10,
-                 profit_lock_level_2=0.18, profit_lock_level_3=0.28):
+                 profit_lock_level_2=0.18, profit_lock_level_3=0.28, **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -367,6 +369,7 @@ class ChiNextTimingStrategy(BaseTimingStrategy):
             profit_lock_level_1=profit_lock_level_1,
             profit_lock_level_2=profit_lock_level_2,
             profit_lock_level_3=profit_lock_level_3,
+            **kwargs,
         )
         self.momentum_short_window = int(momentum_short_window)
         self.momentum_long_window = int(momentum_long_window)
@@ -468,7 +471,7 @@ class NasdaqTimingStrategy(BaseTimingStrategy):
                  initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
                  exposure_mode='binary', enter_threshold=0.55, add_threshold=0.75,
                  trim_threshold=0.35, exit_threshold=0.15, confirm_days=2,
-                 max_entry_exposure=0.5):
+                 max_entry_exposure=0.5, **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -480,6 +483,7 @@ class NasdaqTimingStrategy(BaseTimingStrategy):
             exit_threshold=exit_threshold,
             confirm_days=confirm_days,
             max_entry_exposure=max_entry_exposure,
+            **kwargs,
         )
         self.fast_window = int(fast_window)
         self.slow_window = int(slow_window)
@@ -569,7 +573,7 @@ class SP500TimingStrategy(BaseTimingStrategy):
                  initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
                  exposure_mode='staged', enter_threshold=0.5, add_threshold=0.72,
                  trim_threshold=0.32, exit_threshold=0.14, confirm_days=2,
-                 max_entry_exposure=0.5):
+                 max_entry_exposure=0.5, **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -581,6 +585,7 @@ class SP500TimingStrategy(BaseTimingStrategy):
             exit_threshold=exit_threshold,
             confirm_days=confirm_days,
             max_entry_exposure=max_entry_exposure,
+            **kwargs,
         )
         self.fast_window = int(fast_window)
         self.slow_window = int(slow_window)
@@ -662,22 +667,24 @@ class SP500TimingStrategy(BaseTimingStrategy):
 
 
 class MacroV32TimingStrategy(BaseTimingStrategy):
-    """v3.2 美股宏观多因子择时 — sigmoid 网格最优 (k=1.5, lev=1.4, base=0.5)。"""
+    """v3.3 美股宏观多因子择时 — Fed/regime 增强版。"""
 
     strategy_id = 'macro_v32_timing'
-    display_name = '纳指宏观多因子 v3.2 (Macro Sigmoid)'
+    display_name = '纳指宏观多因子 v3.3 (Macro Regime)'
     strategy_description = (
-        '使用 8 个 FRED 宏观因子 (Fed Funds / 收益率曲线 / 核心CPI / 失业率 / 趋势 / 动量 / VIX / 高收益利差) '
-        '构建 ContScore，经 sigmoid 平滑得到目标仓位；网格搜索鲁棒最优参数 (k=1.5, lev=1.4, base=0.5)，'
-        'OOS Test 2019-2026 Sharpe 0.848 vs BH 0.794，MaxDD -19.8% vs BH -35.6%。'
+        '在原有 8 个宏观/市场因子基础上，额外引入 Fed 限制性与政策转向因子，'
+        '按 Fed / 宏观 / 市场三块分组聚合得到 ContScore，再叠加危机与偏紧风险 overlay，'
+        '通过 sigmoid 映射得到目标仓位。'
     )
 
     def __init__(self, initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
                  exposure_mode='staged', enter_threshold=0.55, add_threshold=0.75,
                  trim_threshold=0.35, exit_threshold=0.15, confirm_days=1,
                  max_entry_exposure=1.0,
-                 sigmoid_k=1.5, max_leverage=1.4, base_position=0.5,
-                 inertia=0.03, crisis_vix=35.0):
+                 sigmoid_k=1.2, max_leverage=1.4, base_position=0.45,
+                 inertia=0.05, crisis_vix=40.0,
+                 fed_block_weight=0.25, restrictive_threshold=0.40, pivot_relief=0.60,
+                 **kwargs):
         super().__init__(
             initial_capital=initial_capital,
             buy_cost=buy_cost,
@@ -689,50 +696,57 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
             exit_threshold=exit_threshold,
             confirm_days=confirm_days,
             max_entry_exposure=max_entry_exposure,
+            **kwargs,
         )
         self.sigmoid_k = float(sigmoid_k)
         self.max_leverage = float(max_leverage)
         self.base_position = float(base_position)
         self.inertia = float(inertia)
         self.crisis_vix = float(crisis_vix)
+        self.fed_block_weight = float(fed_block_weight)
+        self.restrictive_threshold = float(restrictive_threshold)
+        self.pivot_relief = float(pivot_relief)
 
     def get_index_id(self):
         return 'nasdaq'
 
     def get_parameter_definitions(self):
         return [
-            {'key': 'sigmoid_k', 'label': 'Sigmoid 斜率 k', 'type': 'timing', 'min': 1.0, 'max': 3.0, 'step': 0.1, 'default': self.sigmoid_k, 'unit': '', 'description': '越大越接近阶梯映射；v3.2 网格最优 k=1.5（较缓）。'},
+            {'key': 'sigmoid_k', 'label': 'Sigmoid 斜率 k', 'type': 'timing', 'min': 1.0, 'max': 3.0, 'step': 0.1, 'default': self.sigmoid_k, 'unit': '', 'description': '越大越接近阶梯映射。'},
             {'key': 'max_leverage', 'label': '杠杆上限', 'type': 'timing', 'min': 1.0, 'max': 2.0, 'step': 0.1, 'default': self.max_leverage, 'unit': '倍', 'description': 'ContScore 极强时允许的最大仓位（前端展示截断至 100%）。'},
             {'key': 'base_position', 'label': '中性仓位中心', 'type': 'timing', 'min': 0.3, 'max': 0.7, 'step': 0.05, 'default': self.base_position, 'unit': '', 'description': 'ContScore=0 时对应的中性仓位水平。'},
             {'key': 'inertia', 'label': '仓位惯性阈值', 'type': 'timing', 'min': 0.0, 'max': 0.1, 'step': 0.01, 'default': self.inertia, 'unit': '', 'description': '月度调仓变化幅度低于该阈值时不动作，降低噪音换手。'},
-            {'key': 'crisis_vix', 'label': '危机 VIX 阈值', 'type': 'timing', 'min': 25.0, 'max': 50.0, 'step': 1.0, 'default': self.crisis_vix, 'unit': '', 'description': 'VIX 超过该值时强制 ContScore = -2 触发减仓。'},
+            {'key': 'crisis_vix', 'label': '危机 VIX 阈值', 'type': 'timing', 'min': 25.0, 'max': 50.0, 'step': 1.0, 'default': self.crisis_vix, 'unit': '', 'description': 'VIX 超过该值时进入危机状态。'},
+            {'key': 'fed_block_weight', 'label': 'Fed 因子权重', 'type': 'timing', 'min': 0.1, 'max': 0.5, 'step': 0.05, 'default': self.fed_block_weight, 'unit': '', 'description': 'Fed 限制性与转向块在总分中的权重。'},
+            {'key': 'restrictive_threshold', 'label': '偏紧阈值', 'type': 'timing', 'min': 0.0, 'max': 1.5, 'step': 0.1, 'default': self.restrictive_threshold, 'unit': '', 'description': 'Fed 限制性高于该值时，危机区按偏紧状态处理。'},
+            {'key': 'pivot_relief', 'label': '转向缓冲', 'type': 'timing', 'min': 0.0, 'max': 1.5, 'step': 0.1, 'default': self.pivot_relief, 'unit': '', 'description': 'FedPivot 越强，危机区扣分越少。'},
         ]
 
     def get_principle_summary(self):
-        return ('以 4 类宏观因子 (货币/流动性/通胀/经济) + 4 类市场因子 (趋势/动量/波动率/信用) 滚动 5 年 z-score '
-                '平均得 ContScore，sigmoid 映射成 0-100% 仓位；VIX > 35 危机覆盖，月度调仓 + 3% 惯性。')
+        return ('以 Fed / 宏观 / 市场三块 expanding z-score 分组聚合得 ContScore，额外显式区分“高利率但转松”与“高利率继续收紧”；'
+                '当 VIX 危机或 Fed 偏紧且市场块转弱时主动压分，sigmoid 映射成 0-100% 仓位，月度调仓 + 5% 惯性。')
 
     def get_formula_blocks(self):
         return [
             {
-                'title': '8 因子构成',
-                'expression': 'Z1=Money, Z2=Liquidity, Z3=Inflation, Z4=Economy, Z5a=Trend, Z5b=Mom, Z5c=VIX, Z5d=Credit',
-                'explanation': 'Fed Funds 3M-12M、收益率曲线斜率/变化、核心CPI 同比/3M MoM、Sahm 失业率、200MA 价比、20/60MA 比、VIX、高收益利差。',
+                'title': '10 因子构成',
+                'expression': 'Money, Liquidity, Inflation, Economy, Trend, Mom, VIX, Credit, FedRestrictiveness, FedPivot',
+                'explanation': '新增 Fed 限制性（FedFunds - Core CPI YoY）与 3 个月政策转向（-ΔFedFunds）两项因子。',
             },
             {
-                'title': 'ContScore 综合分',
-                'expression': 'ContScore = mean(Z1..Z5d),  if VIX > crisis_vix: ContScore = -2',
-                'explanation': '8 因子等权平均，每个因子滚动 5 年 z-score 标准化并截断在 [-3, +3]，VIX 危机区强制覆盖。',
+                'title': '分组聚合',
+                'expression': 'ContScore = w_fed·FedBlock + (1-w_fed)·0.5·MacroBlock + (1-w_fed)·0.5·MarketBlock',
+                'explanation': '避免新增 Fed 因子直接稀释原有结构，先块内平均，再做块间加权。',
+            },
+            {
+                'title': '风险 overlay',
+                'expression': 'if VIX > crisis_vix or (FedRestrictiveness > θ and MarketBlock < 0): ContScore -= penalty(...)',
+                'explanation': '若 VIX 进入危机区，或 Fed 仍偏紧且市场块已经转弱，则主动压分；若已出现明显转松，则只做部分减分。',
             },
             {
                 'title': 'Sigmoid 仓位映射',
                 'expression': 'Position = clip( sigmoid( k · (ContScore - (base - 0.5)) ) · max_lev , 0, 1)',
-                'explanation': 'ContScore = 0 对应仓位 ≈ base × max_lev；k=1.5 控制斜率平缓；前端展示截断到 100%。',
-            },
-            {
-                'title': '月度调仓 + 惯性',
-                'expression': 'pos_m = M-end last;  Δpos < inertia → 维持上月仓位',
-                'explanation': '日频信号月末重采样，避免日内噪音；变化幅度 < 3% 不调仓以降低换手。',
+                'explanation': 'ContScore = 0 对应仓位 ≈ base × max_lev；前端展示截断到 100%。',
             },
         ]
 
@@ -760,24 +774,56 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
     def _compute_factors(self, ndx, macro):
         f = pd.DataFrame(index=macro.index)
         ff_diff = macro['FedFunds'].rolling(90).mean() - macro['FedFunds'].rolling(365).mean()
-        f['Z1_Money'] = -_zscore_rolling(ff_diff)
-        yc_lvl = _zscore_rolling(macro['YC'])
-        yc_chg = _zscore_rolling(macro['YC'].diff(60))
+        f['Z1_Money'] = -_zscore_expanding(ff_diff)
+        yc_lvl = _zscore_expanding(macro['YC'])
+        yc_chg = _zscore_expanding(macro['YC'].diff(60))
         f['Z2_Liquidity'] = (yc_lvl + yc_chg) / 2
         cpi_yoy = (macro['CPI'] / macro['CPI'].shift(365) - 1) * 100
-        f['Z3_Inflation'] = (-_zscore_rolling(cpi_yoy.diff(90)) - _zscore_rolling(cpi_yoy.clip(lower=2.0))) / 2
+        f['CPI_YoY'] = cpi_yoy
+        f['Z3_Inflation'] = (-_zscore_expanding(cpi_yoy.diff(90)) - _zscore_expanding(cpi_yoy.clip(lower=2.0))) / 2
         sahm = macro['Unemp'].rolling(90).mean() - macro['Unemp'].rolling(365).min()
-        f['Z4_Economy'] = -_zscore_rolling(sahm)
+        f['Z4_Economy'] = -_zscore_expanding(sahm)
         ndx_daily = ndx.reindex(macro.index).ffill()
         ma200 = ndx_daily.rolling(200).mean()
-        f['Z5a_Trend'] = _zscore_rolling((ndx_daily / ma200 - 1) * 100)
-        f['Z5b_Mom'] = _zscore_rolling((ndx_daily.rolling(20).mean() / ndx_daily.rolling(60).mean() - 1) * 100)
-        f['Z5c_VIX'] = -_zscore_rolling(macro['VIX'])
-        f['Z5d_Credit'] = -_zscore_rolling(macro['HYS_proxy'])
-        z_cols = [c for c in f.columns if c.startswith('Z')]
-        f['ContScore'] = f[z_cols].mean(axis=1)
+        f['Z5a_Trend'] = _zscore_expanding((ndx_daily / ma200 - 1) * 100)
+        f['Z5b_Mom'] = _zscore_expanding((ndx_daily.rolling(20).mean() / ndx_daily.rolling(60).mean() - 1) * 100)
+        f['Z5c_VIX'] = -_zscore_expanding(macro['VIX'])
+        f['Z5d_Credit'] = -_zscore_expanding(macro['HYS_proxy'])
+        real_rate = macro['FedFunds'] - cpi_yoy
+        f['Z6_FedRestrictiveness'] = _zscore_expanding(real_rate)
+        f['Z7_FedPivot'] = _zscore_expanding(-macro['FedFunds'].diff(90))
+
+        f['MacroBlock'] = f[['Z1_Money', 'Z2_Liquidity', 'Z3_Inflation', 'Z4_Economy']].mean(axis=1)
+        f['MarketBlock'] = f[['Z5a_Trend', 'Z5b_Mom', 'Z5c_VIX', 'Z5d_Credit']].mean(axis=1)
+        f['FedBlock'] = f[['Z6_FedRestrictiveness', 'Z7_FedPivot']].mean(axis=1)
+
+        w_fed = min(max(self.fed_block_weight, 0.0), 1.0)
+        w_other = (1.0 - w_fed) / 2.0
+        f['ContScore'] = w_fed * f['FedBlock'] + w_other * f['MacroBlock'] + w_other * f['MarketBlock']
+
         crisis = macro['VIX'] > self.crisis_vix
-        f.loc[crisis, 'ContScore'] = -2.0
+        restrictive = f['Z6_FedRestrictiveness'].fillna(0.0)
+        pivot = f['Z7_FedPivot'].fillna(0.0)
+        market_block = f['MarketBlock'].fillna(0.0)
+        relief = pivot.clip(lower=0.0) * self.pivot_relief
+
+        crisis_penalty = pd.Series(0.0, index=f.index)
+        tight_crisis = crisis & (restrictive >= self.restrictive_threshold)
+        crisis_penalty.loc[crisis] = 1.0
+        crisis_penalty.loc[tight_crisis] = 2.0
+        crisis_penalty.loc[crisis] = (crisis_penalty.loc[crisis] - relief.loc[crisis]).clip(lower=0.5, upper=2.0)
+
+        risk_off_penalty = pd.Series(0.0, index=f.index)
+        tight_risk_off = (restrictive >= self.restrictive_threshold) & (market_block < 0.0)
+        risk_off_penalty.loc[tight_risk_off] = (
+            0.35 + (-market_block.loc[tight_risk_off]).clip(lower=0.0, upper=2.0) * 0.35
+            - pivot.loc[tight_risk_off].clip(lower=0.0) * 0.15
+        ).clip(lower=0.15, upper=0.9)
+
+        total_penalty = pd.concat([crisis_penalty, risk_off_penalty], axis=1).max(axis=1)
+        f['RiskOffPenalty'] = risk_off_penalty
+        f['RegimePenalty'] = total_penalty
+        f['ContScore'] = f['ContScore'] - total_penalty
         return f
 
     def _sigmoid_position(self, score):
@@ -829,6 +875,13 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
         out['z_momentum'] = factors['Z5b_Mom'].reindex(out['交易日期']).values
         out['z_vix'] = factors['Z5c_VIX'].reindex(out['交易日期']).values
         out['z_credit'] = factors['Z5d_Credit'].reindex(out['交易日期']).values
+        out['z_fed_restrictiveness'] = factors['Z6_FedRestrictiveness'].reindex(out['交易日期']).values
+        out['z_fed_pivot'] = factors['Z7_FedPivot'].reindex(out['交易日期']).values
+        out['macro_block'] = factors['MacroBlock'].reindex(out['交易日期']).values
+        out['market_block'] = factors['MarketBlock'].reindex(out['交易日期']).values
+        out['fed_block'] = factors['FedBlock'].reindex(out['交易日期']).values
+        out['risk_off_penalty'] = factors['RiskOffPenalty'].reindex(out['交易日期']).values
+        out['regime_penalty'] = factors['RegimePenalty'].reindex(out['交易日期']).values
         out['macro_position'] = pos_daily.reindex(out['交易日期']).values
         return out
 
@@ -840,21 +893,38 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
             '通胀': row.get('z_inflation'), '经济': row.get('z_economy'),
             '趋势': row.get('z_trend'), '动量': row.get('z_momentum'),
             'VIX': row.get('z_vix'), '信用': row.get('z_credit'),
+            'Fed限制性': row.get('z_fed_restrictiveness'), 'Fed转向': row.get('z_fed_pivot'),
         }
         details = [f"{k}: {v:+.2f}" for k, v in zs.items() if pd.notna(v)]
+        if pd.notna(row.get('macro_block')):
+            details.append(f"宏观块 {float(row.get('macro_block')):+.2f}")
+        if pd.notna(row.get('market_block')):
+            details.append(f"市场块 {float(row.get('market_block')):+.2f}")
+        if pd.notna(row.get('fed_block')):
+            details.append(f"Fed块 {float(row.get('fed_block')):+.2f}")
+        if pd.notna(row.get('risk_off_penalty')) and float(row.get('risk_off_penalty') or 0) > 0:
+            details.append(f"偏紧压分 {float(row.get('risk_off_penalty')):+.2f}")
+        if pd.notna(row.get('regime_penalty')) and float(row.get('regime_penalty') or 0) > 0:
+            details.append(f"总风险扣分 {float(row.get('regime_penalty')):+.2f}")
         details.append(f"ContScore {cs:+.2f}" if pd.notna(cs) else 'ContScore 未就绪')
         details.append(f"目标仓位 {pos*100:.0f}%")
         action = row.get('rebalance_action', 'flat')
+        fed_restrictive = row.get('z_fed_restrictiveness', np.nan)
+        fed_pivot = row.get('z_fed_pivot', np.nan)
         if pd.isna(cs):
             summary = '宏观因子尚未就绪，保持空仓。'
         elif cs <= -1.5:
-            summary = f'宏观分数 {cs:+.2f} 极弱，触发危机保护减至最低仓位。'
+            summary = f'宏观分数 {cs:+.2f} 极弱，危机状态下维持最低仓位。'
         elif cs <= -0.3:
             summary = f'宏观分数 {cs:+.2f} 偏弱，降低风险敞口。'
         elif cs >= 0.6:
-            summary = f'宏观分数 {cs:+.2f} 偏强，趋势 + 流动性共振，扩大仓位。'
+            summary = f'宏观分数 {cs:+.2f} 偏强，扩大仓位。'
         else:
             summary = f'宏观分数 {cs:+.2f} 中性区间，维持基准仓位。'
+        if pd.notna(fed_restrictive) and fed_restrictive >= self.restrictive_threshold:
+            summary += ' Fed 仍偏紧。'
+        elif pd.notna(fed_pivot) and fed_pivot > 0.3:
+            summary += ' Fed 已出现转松迹象。'
         if action == 'add':
             summary += ' 本月加仓。'
         elif action == 'trim':
@@ -883,6 +953,12 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
             return df
 
         target = pd.Series(df['macro_position'].values, index=df.index).fillna(0.0).clip(lower=0.0, upper=1.0).round(4)
+        if self.base_floor > 0:
+            cont_series = pd.Series(df['cont_score'].values, index=df.index)
+            ready_series = cont_series.notna()
+            floor_active = ready_series.cummax()
+            floored = target.clip(lower=self.base_floor)
+            target = target.where(~floor_active, floored).round(4)
         prev = target.shift(1).fillna(0.0).round(4)
         change = (target - prev).round(4)
 

@@ -1,0 +1,55 @@
+{
+  "strategy_id": "nasdaq_timing",
+  "training_cutoff": "2025-11-30",
+  "generated_at": "2026-05-23T19:39:37",
+  "score_formula": "0.4*Calmar(6m) + 0.3*Calmar(1y) + 0.3*Calmar(full_pre_cutoff)  [floor: full_nav >= 1.00*default]",
+  "maxdd_threshold": 0.2,
+  "full_nav_floor_ratio": 1.0,
+  "default_full_nav": 1.7541,
+  "fallback_to_default": true,
+  "score": NaN,
+  "tuned_params": {
+    "fast_window": 20,
+    "slow_window": 120,
+    "momentum_window": 120
+  },
+  "all_params": {
+    "exposure_mode": "staged",
+    "enter_threshold": 0.55,
+    "add_threshold": 0.75,
+    "trim_threshold": 0.35,
+    "exit_threshold": 0.15,
+    "confirm_days": 2,
+    "max_entry_exposure": 0.5,
+    "fast_window": 20,
+    "slow_window": 120,
+    "momentum_window": 120
+  },
+  "window_metrics": {
+    "recent_6m": {
+      "final_nav": 1.0999,
+      "annual_return": 0.21559999999999999,
+      "max_drawdown": -0.0378,
+      "calmar": 5.71,
+      "rebalance_count": 27,
+      "avg_exposure": 0.4187
+    },
+    "recent_1y": {
+      "final_nav": 1.1281,
+      "annual_return": 0.12960000000000002,
+      "max_drawdown": -0.06849999999999999,
+      "calmar": 1.89,
+      "rebalance_count": 36,
+      "avg_exposure": 0.344
+    },
+    "full_pre_cutoff": {
+      "final_nav": 1.7541,
+      "annual_return": 0.0556,
+      "max_drawdown": -0.24530000000000002,
+      "calmar": 0.23,
+      "rebalance_count": 331,
+      "avg_exposure": 0.3439
+    }
+  },
+  "grid_size": 27
+}

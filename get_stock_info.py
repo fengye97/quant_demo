@@ -1210,57 +1210,471 @@ def supplement_csv(
     # (already done above by mutating stock_data[code][-1][54])
 
     # ── Step 5: Write back to CSV ──
-    # Sort new rows by date then stock code to maintain ordering
+    # Sort only the new rows; the existing CSV is already sorted so we just append.
     new_rows.sort(key=lambda r: (r[0], r[1]))
 
-    # Read all existing rows and append new ones
-    all_rows = []
-    with open(csv_path, "r", encoding="gbk") as f:
-        reader = csv.reader(f)
-        existing_headers = next(reader)
-        all_rows.extend(list(reader))
-
-    # Update the previous month's 下周期每天涨跌幅 in all_rows
-    # This is done through the mutation of stock_data above
-    # which shares references with all_rows... actually csv.reader creates new lists.
-    # We need to rebuild by scanning.
-
-    # For simplicity, rewrite the entire file with updated backfill + new rows
     print(f"\nWriting updated CSV ...", file=sys.stderr)
 
-    # Rebuild all rows with backfill updates
-    # Track which (code, date) pairs had their 下周期每天涨跌幅 updated
+    # Build backfill map from the in-memory stock_data (already loaded).
     backfill_map = {}
     for code, rows in stock_data.items():
-        if len(rows) >= 1:
+        if rows:
             last_row = rows[-1]
-            # If the last row's column 54 was updated from "[]" to actual data
             if last_row[0].startswith(prev_month_str) and last_row[54] != "[]":
                 backfill_map[(code, last_row[0])] = last_row[54]
 
-    updated_rows = []
-    for row in all_rows:
-        code = row[1]
-        key = (code, row[0])
-        if key in backfill_map:
-            row[54] = backfill_map[key]
-        updated_rows.append(row)
-
-    # Append new rows
-    updated_rows.extend(new_rows)
-
-    # Sort
-    updated_rows.sort(key=lambda r: (r[0], r[1]))
-
-    # Write
-    with open(csv_path, "w", encoding="gbk", newline="") as f:
-        writer = csv.writer(f)
+    # Stream existing file → temp file applying backfill, then append new rows.
+    # Writing to a temp file first makes the operation atomic: if the process is
+    # interrupted mid-write the original CSV is untouched; the temp is abandoned.
+    tmp_path = csv_path + ".tmp"
+    total_written = 0
+    with open(csv_path, "r", encoding="gbk") as fin, \
+         open(tmp_path, "w", encoding="gbk", newline="") as fout:
+        reader = csv.reader(fin)
+        writer = csv.writer(fout)
+        existing_headers = next(reader)
         writer.writerow(existing_headers)
-        writer.writerows(updated_rows)
+        for row in reader:
+            key = (row[1], row[0])  # (code, date)
+            if key in backfill_map:
+                row[54] = backfill_map[key]
+            writer.writerow(row)
+            total_written += 1
+        writer.writerows(new_rows)
+        total_written += len(new_rows)
 
-    print(f"  Done. Total rows now: {len(updated_rows)}", file=sys.stderr)
+    # Atomic rename: replaces the original only after the write is fully complete.
+    os.replace(tmp_path, csv_path)
+
+    print(f"  Done. Total rows now: {total_written}", file=sys.stderr)
     print(f"  Appended {len(new_rows)} new rows for {target_str}", file=sys.stderr)
 
+    return len(new_rows)
+
+
+# ──────────────────────────────────────────────
+# Incremental per-stock daily cache (restart-safe)
+# ──────────────────────────────────────────────
+#
+# Layout: <cache_dir>/daily_stocks/<code>.csv (UTF-8)
+#   date,open,high,low,close,volume   (sorted by date ascending)
+#
+# Each stock has its own tiny CSV. Writes use a temp file + os.replace so a
+# crash mid-update leaves the original cache intact, and the next run resumes
+# from each stock's last cached day.
+
+DAILY_CACHE_DIRNAME = "daily_stocks"
+
+
+def _daily_cache_path(cache_dir: str, code: str) -> str:
+    return os.path.join(cache_dir, DAILY_CACHE_DIRNAME, f"{code}.csv")
+
+
+def _load_daily_cache_one(cache_dir: str, code: str) -> List[Dict[str, object]]:
+    """Return cached daily rows sorted by date ascending, or [] if none."""
+    path = _daily_cache_path(cache_dir, code)
+    if not os.path.exists(path):
+        return []
+    rows: List[Dict[str, object]] = []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            try:
+                rows.append({
+                    "date": r["date"],
+                    "open": float(r["open"]),
+                    "high": float(r["high"]),
+                    "low": float(r["low"]),
+                    "close": float(r["close"]),
+                    "volume": int(float(r["volume"])),
+                })
+            except (KeyError, ValueError):
+                continue
+    rows.sort(key=lambda x: x["date"])
+    return rows
+
+
+def _save_daily_cache_one(cache_dir: str, code: str, rows: List[Dict[str, object]]) -> None:
+    """Atomically write per-stock daily cache (temp file + os.replace)."""
+    path = _daily_cache_path(cache_dir, code)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date", "open", "high", "low", "close", "volume"])
+        for r in sorted(rows, key=lambda x: x["date"]):
+            writer.writerow([
+                r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"]
+            ])
+    os.replace(tmp, path)
+
+
+def _merge_daily(cached: List[Dict[str, object]],
+                 fetched: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Merge cached + fetched daily rows, dedup by date (fetched wins on overlap)."""
+    by_date: Dict[str, Dict[str, object]] = {r["date"]: r for r in cached}
+    for r in fetched:
+        by_date[r["date"]] = r
+    return sorted(by_date.values(), key=lambda x: x["date"])
+
+
+def _fetch_incremental_single(
+    code: str,
+    cached: List[Dict[str, object]],
+    today_str: str,
+    min_history_days: int = 120,
+    fresh_gap_days: int = 3,
+) -> Tuple[str, Optional[List[Dict[str, object]]], Optional[str], bool]:
+    """
+    Fetch only the missing daily bars for one stock and merge with cache.
+
+    Returns (code, merged_rows or None, error or None, did_network_fetch).
+    If cache is already up-to-date (last_cached_date within `fresh_gap_days`
+    of today_str), no network fetch is performed and merged_rows == cached.
+    `fresh_gap_days=3` covers weekend gaps: a Friday-end cache survives Sat/Sun/Mon
+    re-runs without unnecessary re-fetch (next real bar isn't until Mon close).
+    """
+    from datetime import datetime as _dt
+
+    if cached:
+        last_date = cached[-1]["date"]
+        if last_date >= today_str:
+            return (code, cached, None, False)
+        try:
+            d_last = _dt.strptime(last_date, "%Y-%m-%d")
+            d_today = _dt.strptime(today_str, "%Y-%m-%d")
+            cal_gap = (d_today - d_last).days
+        except ValueError:
+            cal_gap = min_history_days
+        # Cache freshness: skip network fetch if cached data is within fresh_gap_days
+        if cal_gap <= fresh_gap_days:
+            return (code, cached, None, False)
+        # Small buffer for weekends/holidays; cap at min_history_days
+        datalen = max(5, min(cal_gap + 10, min_history_days))
+    else:
+        # First seed: full warmup window
+        datalen = min_history_days
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            fetched = fetch_a_share_daily_from_sina(code, datalen=datalen)
+            merged = _merge_daily(cached, fetched)
+            return (code, merged, None, True)
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (attempt + 1))
+            else:
+                return (code, None, str(e), True)
+    return (code, None, "Unknown error", True)
+
+
+def fetch_daily_batch_incremental(
+    stock_codes: List[str],
+    cache_dir: str,
+    today_str: Optional[str] = None,
+    min_history_days: int = 120,
+    max_workers: int = 8,  # Sina rate-limits ~3-5k bursts; 8 workers stays under
+    verbose: bool = True,
+) -> Dict[str, List[Dict[str, object]]]:
+    """
+    Incremental concurrent fetch.
+
+    For each stock: load its daily cache → fetch only the missing days → merge
+    → atomic-save its cache immediately. The result dict maps code → full
+    merged daily rows (cached + new) for downstream aggregation.
+
+    Restart safety: each completed stock has its updated cache on disk before
+    the next stock starts processing. An interrupted run resumes naturally on
+    the next invocation (each stock skips already-cached days).
+    """
+    if today_str is None:
+        today_str = time.strftime("%Y-%m-%d")
+
+    os.makedirs(os.path.join(cache_dir, DAILY_CACHE_DIRNAME), exist_ok=True)
+
+    results: Dict[str, List[Dict[str, object]]] = {}
+    errors: List[str] = []
+    no_op = 0
+    fetched_n = 0
+    total = len(stock_codes)
+    completed = 0
+
+    def _process(code: str):
+        cached = _load_daily_cache_one(cache_dir, code)
+        return _fetch_incremental_single(code, cached, today_str, min_history_days)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process, code): code for code in stock_codes}
+        for future in as_completed(futures):
+            code, merged, error, did_fetch = future.result()
+            completed += 1
+            if merged is not None:
+                results[code] = merged
+                if did_fetch:
+                    fetched_n += 1
+                    # Only rewrite cache when we actually pulled new data
+                    _save_daily_cache_one(cache_dir, code, merged)
+                else:
+                    no_op += 1
+            else:
+                errors.append(f"{code}: {error}")
+            if verbose and completed % 200 == 0:
+                print(
+                    f"  Progress: {completed}/{total} stocks "
+                    f"({fetched_n} fetched, {no_op} cache-hit, {len(errors)} errors)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(RATE_LIMIT)
+
+    if verbose:
+        print(
+            f"  Total: {completed}/{total} processed "
+            f"({fetched_n} fetched from network, {no_op} cache-hit, {len(errors)} errors)",
+            file=sys.stderr,
+            flush=True,
+        )
+        for err in errors[:10]:
+            print(f"    {err}", file=sys.stderr, flush=True)
+        if len(errors) > 10:
+            print(f"    ... and {len(errors) - 10} more", file=sys.stderr, flush=True)
+
+    return results
+
+
+def _build_target_month_row(
+    code: str,
+    daily: List[Dict[str, object]],
+    rt: Dict[str, object],
+    stock_rows: List[List[str]],
+    target_year: int,
+    target_month: int,
+) -> Optional[List[str]]:
+    """
+    Build a single stock_data.csv row for (code, target_year-target_month).
+
+    Returns None if there's no daily bar for this month or no previous row to
+    carry forward from.
+    """
+    monthly = aggregate_daily_to_monthly(daily, target_year, target_month)
+    if not monthly:
+        return None
+    last_row = get_last_row(stock_rows)
+    if not last_row:
+        return None
+
+    daily_sorted = sorted(daily, key=lambda r: r["date"])
+    d_dates = [r["date"] for r in daily_sorted]
+    d_opens = [r["open"] for r in daily_sorted]
+    d_highs = [r["high"] for r in daily_sorted]
+    d_lows = [r["low"] for r in daily_sorted]
+    d_closes = [r["close"] for r in daily_sorted]
+    d_volumes = [r["volume"] for r in daily_sorted]
+    indicators = compute_all_indicators(d_dates, d_opens, d_highs, d_lows, d_closes, d_volumes)
+
+    def last_valid(values: List[float]) -> float:
+        for v in reversed(values):
+            if not math.isnan(v):
+                return v
+        return float("nan")
+
+    def safe_float(val, default=0.0):
+        if val is None or val == "":
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
+    prev_float_mktcap = last_row[10] if last_row[10] else "0"
+    prev_total_mktcap = last_row[11] if last_row[11] else "0"
+
+    pe_ttm = safe_float(rt.get("pe_ttm", 0)) if rt else 0.0
+    pe_inverse = 1.0 / pe_ttm if pe_ttm else safe_float(last_row[48], 0.0)
+    pb_ratio = safe_float(rt.get("pb_ratio", 0)) if rt else 0.0
+    pb_inverse = 1.0 / pb_ratio if pb_ratio else safe_float(last_row[49], 0.0)
+
+    prev_trading_days = safe_float(last_row[12], 0.0)
+    trading_days = prev_trading_days + monthly["trading_days"]
+
+    prev_close = safe_float(last_row[7], monthly["open"])
+    month_return = (monthly["close"] - prev_close) / prev_close if prev_close != 0 else 0
+
+    row = [""] * len(CSV_HEADERS)
+    row[0] = monthly["date"]
+    row[1] = code
+    row[2] = last_row[2]
+    row[3] = "1"
+    row[4] = str(monthly["open"])
+    row[5] = str(monthly["high"])
+    row[6] = str(monthly["low"])
+    row[7] = str(monthly["close"])
+    row[8] = str(monthly["vwap_est"])
+    row[9] = str(monthly["amount_est"])
+    row[10] = prev_float_mktcap
+    row[11] = prev_total_mktcap
+    row[12] = str(trading_days)
+    for col_idx in CARRY_FORWARD_COLS:
+        if col_idx < len(last_row):
+            row[col_idx] = last_row[col_idx]
+    v = last_valid(indicators["涨跌幅_10"]); row[28] = str(v) if not math.isnan(v) else "0"
+    v = last_valid(indicators["涨跌幅_20"]); row[29] = str(v) if not math.isnan(v) else "0"
+    for col_idx, key in [(30, "bias_5"), (31, "bias_10"), (32, "bias_20"),
+                         (33, "振幅_5"), (34, "振幅_10"), (35, "振幅_20"),
+                         (36, "涨跌幅std_5"), (37, "涨跌幅std_10"), (38, "涨跌幅std_20"),
+                         (39, "成交额std_5"), (40, "成交额std_10"), (41, "成交额std_20"),
+                         (42, "K"), (43, "D"), (44, "J"),
+                         (45, "DIF"), (46, "DEA"), (47, "MACD")]:
+        v = last_valid(indicators[key])
+        row[col_idx] = str(v) if not math.isnan(v) else "0"
+    row[48] = str(pe_inverse)
+    row[49] = str(pb_inverse)
+    for col_idx in [50, 51, 52]:
+        if col_idx < len(last_row):
+            row[col_idx] = last_row[col_idx]
+    row[53] = str(month_return)
+    row[54] = "[]"  # next-period daily returns: filled in once next month exists
+    # daily_returns of THIS month — used to backfill prev month's column 54
+    row.append(monthly["daily_returns"])  # sentinel field, stripped before write
+    return row
+
+
+def supplement_csv_incremental(
+    csv_path: str,
+    target_year: int,
+    target_month: int,
+    cache_dir: str,
+    max_stocks: Optional[int] = None,
+    min_history_days: int = 120,
+    today_str: Optional[str] = None,
+) -> int:
+    """
+    Restart-safe incremental supplement.
+
+    Differs from supplement_csv:
+      * No destructive "delete the target month then refetch" stage.
+      * Per-stock daily cache: each stock only fetches days since last cache.
+      * stock_data.csv update is an in-place upsert (replace target-month row
+        if present, append otherwise) via stream + os.replace.
+
+    Returns the number of stock_data.csv rows written for target month
+    (replaced + newly appended).
+    """
+    if today_str is None:
+        today_str = time.strftime("%Y-%m-%d")
+    target_str = f"{target_year}-{target_month:02d}"
+    prev_month = target_month - 1
+    prev_year = target_year
+    if prev_month == 0:
+        prev_month = 12
+        prev_year -= 1
+    prev_month_str = f"{prev_year}-{prev_month:02d}"
+
+    print(f"Reading {csv_path} ...", file=sys.stderr, flush=True)
+    _, stock_data = read_csv_data(csv_path)
+    print(f"  Found {len(stock_data)} unique stocks", file=sys.stderr, flush=True)
+
+    # Eligible stocks: those with a row in prev month OR target month (handles
+    # the case where target month was partially populated by a previous run).
+    eligible = []
+    for code, rows in stock_data.items():
+        if not rows:
+            continue
+        last_date = rows[-1][0]
+        if last_date >= f"{prev_year}-{prev_month:02d}-01":
+            eligible.append(code)
+    if not eligible:
+        eligible = list(stock_data.keys())
+    if max_stocks and max_stocks < len(eligible):
+        eligible = eligible[:max_stocks]
+        print(f"  Limited to {max_stocks} stocks for testing", file=sys.stderr, flush=True)
+    print(f"  {len(eligible)} stocks eligible for {target_str} update", file=sys.stderr, flush=True)
+
+    # Step 1: incremental daily fetch (each stock's cache persisted on completion)
+    print(f"\nIncremental daily fetch (per-stock cache, restart-safe) ...", file=sys.stderr, flush=True)
+    daily_data = fetch_daily_batch_incremental(
+        eligible, cache_dir, today_str=today_str, min_history_days=min_history_days
+    )
+
+    # Step 2: real-time quotes (still bulk; small response, fast)
+    os.makedirs(cache_dir, exist_ok=True)
+    rt_cache_file = os.path.join(cache_dir, f"rtquotes_{target_str}.pkl")
+    if os.path.exists(rt_cache_file):
+        print(f"  Loading cached real-time quotes from {rt_cache_file}",
+              file=sys.stderr, flush=True)
+        with open(rt_cache_file, "rb") as f:
+            import pickle as _pickle
+            rt_quotes = _pickle.load(f)
+    else:
+        print(f"\nFetching real-time quotes ...", file=sys.stderr, flush=True)
+        rt_quotes = fetch_realtime_quotes_batch(eligible)
+        with open(rt_cache_file, "wb") as f:
+            import pickle as _pickle
+            _pickle.dump(rt_quotes, f)
+        print(f"  Fetched {len(rt_quotes)} real-time quotes", file=sys.stderr, flush=True)
+
+    # Step 3: build monthly rows from updated daily cache
+    print(f"\nBuilding {target_str} monthly rows ...", file=sys.stderr, flush=True)
+    new_rows: List[List[str]] = []
+    backfill_prev_col54: Dict[Tuple[str, str], str] = {}
+    skipped = 0
+    for code in eligible:
+        daily = daily_data.get(code)
+        if not daily:
+            skipped += 1
+            continue
+        row_with_sentinel = _build_target_month_row(
+            code, daily, rt_quotes.get(code, {}) if rt_quotes else {},
+            stock_data[code], target_year, target_month,
+        )
+        if row_with_sentinel is None:
+            skipped += 1
+            continue
+        # Pop sentinel daily_returns (used for prev-month col 54 backfill)
+        daily_returns = row_with_sentinel.pop()
+        if daily_returns and stock_data[code]:
+            prev_last = stock_data[code][-1]
+            if prev_last[0].startswith(prev_month_str):
+                backfill_prev_col54[(code, prev_last[0])] = str(daily_returns)
+        new_rows.append(row_with_sentinel)
+    print(f"  Built {len(new_rows)} {target_str} rows ({skipped} skipped)",
+          file=sys.stderr, flush=True)
+
+    if not new_rows:
+        print("  Nothing to write; CSV unchanged.", file=sys.stderr, flush=True)
+        return 0
+
+    # Step 4: upsert into CSV (replace existing target-month rows, append rest)
+    print(f"\nUpserting {target_str} rows into CSV ...", file=sys.stderr, flush=True)
+    new_keys = {(r[0][:7], r[1]) for r in new_rows}
+    tmp_path = csv_path + ".tmp"
+    kept = replaced = 0
+    with open(csv_path, "r", encoding="gbk") as fin, \
+         open(tmp_path, "w", encoding="gbk", newline="") as fout:
+        reader = csv.reader(fin)
+        writer = csv.writer(fout)
+        existing_headers = next(reader)
+        writer.writerow(existing_headers)
+        for row in reader:
+            key = (row[0][:7], row[1])
+            if key in new_keys:
+                # Drop old target-month row; new one will be appended below.
+                replaced += 1
+                continue
+            bk_key = (row[1], row[0])
+            if bk_key in backfill_prev_col54:
+                row[54] = backfill_prev_col54[bk_key]
+            writer.writerow(row)
+            kept += 1
+        new_rows.sort(key=lambda r: (r[0], r[1]))
+        writer.writerows(new_rows)
+    os.replace(tmp_path, csv_path)
+    print(
+        f"  Done. Kept {kept}, replaced {replaced}, appended {len(new_rows)} "
+        f"(total now {kept + len(new_rows)})",
+        file=sys.stderr,
+        flush=True,
+    )
     return len(new_rows)
 
 
@@ -1349,7 +1763,17 @@ Examples:
         help=(
             "Number of daily bars to fetch per stock (default: 120, ~5 months). "
             "Must be at least 80 for reliable MACD/bias_20/std_20 computation. "
-            "The target month occupies ~15-22 bars; the remainder is warmup history."
+            "Used as the warmup window for the FIRST seed of per-stock daily cache; "
+            "subsequent runs only fetch days since the last cached date."
+        ),
+    )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help=(
+            "Use the legacy monthly supplement_csv (full ~120-day fetch per stock, "
+            "no per-stock cache, not restart-safe). Default is the incremental path "
+            "that maintains per-stock daily cache and only fetches the delta."
         ),
     )
 
@@ -1369,15 +1793,28 @@ Examples:
 
         cache_dir_val = args.cache_dir if args.cache_dir else None
 
-        count = supplement_csv(
-            csv_full,
-            target_year=args.year,
-            target_month=args.month,
-            max_stocks=args.max_stocks,
-            cache_dir=cache_dir_val,
-            datalen=args.datalen,
-        )
-        print(f"\nSupplement complete. {count} rows added.")
+        if args.legacy:
+            count = supplement_csv(
+                csv_full,
+                target_year=args.year,
+                target_month=args.month,
+                max_stocks=args.max_stocks,
+                cache_dir=cache_dir_val,
+                datalen=args.datalen,
+            )
+            print(f"\nLegacy supplement complete. {count} rows added.")
+        else:
+            if not cache_dir_val:
+                raise SystemExit("ERROR: --cache-dir is required for incremental mode (default '.cache' is fine)")
+            count = supplement_csv_incremental(
+                csv_full,
+                target_year=args.year,
+                target_month=args.month,
+                cache_dir=cache_dir_val,
+                max_stocks=args.max_stocks,
+                min_history_days=args.datalen,
+            )
+            print(f"\nIncremental supplement complete. {count} {args.year}-{args.month:02d} rows upserted.")
 
 
 if __name__ == "__main__":

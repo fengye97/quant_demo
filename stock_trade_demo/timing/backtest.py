@@ -662,6 +662,57 @@ def _build_period_local_nav(result_df):
     return (1.0 + returns).cumprod()
 
 
+def _build_etf_benchmark_returns(result_df):
+    result = result_df.copy().reset_index(drop=True)
+    if len(result) == 0 or 'etf_close' not in result.columns:
+        return None
+    etf = result[['交易日期', 'etf_close']].copy()
+    etf['交易日期'] = pd.to_datetime(etf['交易日期'])
+    etf['etf_close'] = pd.to_numeric(etf['etf_close'], errors='coerce')
+    etf = etf.dropna(subset=['交易日期', 'etf_close'])
+    etf = etf[etf['etf_close'] > 0].drop_duplicates(subset=['交易日期']).sort_values('交易日期')
+    if len(etf) < 2:
+        return None
+    daily_returns = etf.set_index('交易日期')['etf_close'].pct_change().dropna()
+    if len(daily_returns) == 0:
+        return None
+    monthly_returns = daily_returns.resample('M').apply(lambda x: (1 + x).prod() - 1).dropna()
+    return monthly_returns if len(monthly_returns) else None
+
+
+def _build_etf_summary(result_df):
+    result = result_df.copy().reset_index(drop=True)
+    if len(result) == 0 or 'etf_close' not in result.columns:
+        return {}
+    etf = result[['交易日期', 'etf_close']].copy()
+    etf['交易日期'] = pd.to_datetime(etf['交易日期'])
+    etf['etf_close'] = pd.to_numeric(etf['etf_close'], errors='coerce')
+    etf = etf.dropna(subset=['交易日期', 'etf_close'])
+    etf = etf[etf['etf_close'] > 0].drop_duplicates(subset=['交易日期']).sort_values('交易日期')
+    if len(etf) == 0:
+        return {}
+
+    start_price = float(etf['etf_close'].iloc[0])
+    end_price = float(etf['etf_close'].iloc[-1])
+    etf_return_pct = ((end_price / start_price) - 1.0) * 100.0 if start_price > 0 else None
+    strategy_nav = _build_period_local_nav(result)
+    strategy_return_pct = (float(strategy_nav.iloc[-1]) - 1.0) * 100.0 if len(strategy_nav) else None
+    strategy_excess_pct = None
+    if strategy_return_pct is not None and etf_return_pct is not None:
+        strategy_excess_pct = strategy_return_pct - etf_return_pct
+
+    latest = result.iloc[-1]
+    return {
+        'etf_code': latest.get('etf_code') or result.attrs.get('etf_code'),
+        'etf_name': latest.get('etf_name') or result.attrs.get('etf_name'),
+        'start_price': round(start_price, 4),
+        'end_price': round(end_price, 4),
+        'return_pct': round(etf_return_pct, 2) if etf_return_pct is not None else None,
+        'strategy_return_pct': round(strategy_return_pct, 2) if strategy_return_pct is not None else None,
+        'strategy_excess_pct': round(strategy_excess_pct, 2) if strategy_excess_pct is not None else None,
+    }
+
+
 def evaluate_timing_result(result_df, benchmark_returns=None, reset_capital=False):
     result = result_df.copy().reset_index(drop=True)
     metrics = {}
@@ -860,6 +911,7 @@ def summarize_timing_windows(result_df, benchmark_returns=None, full_history_sta
                 'training_range': {'start': None, 'end': None},
                 'test_range': {'start': None, 'end': None},
                 'metrics': {},
+                'etf_summary': {},
             }
             continue
         metrics = evaluate_timing_result(
@@ -898,6 +950,7 @@ def summarize_timing_windows(result_df, benchmark_returns=None, full_history_sta
                 'fee_ratio': metrics.get('手续费占比'),
                 'reset_capital': metrics.get('资金重置口径', False),
             },
+            'etf_summary': _build_etf_summary(sliced),
         }
     return summary
 
@@ -1108,6 +1161,7 @@ def timing_result_to_json(result_df, metrics, benchmark_meta=None, benchmark_cur
         'avg_exposure': g('平均仓位'),
         'rebalance_count': g('调仓次数'),
     }
+    etf_summary = _build_etf_summary(result_df)
 
     return {
         'equity_curve': equity_curve,
@@ -1149,6 +1203,7 @@ def timing_result_to_json(result_df, metrics, benchmark_meta=None, benchmark_cur
         'trade_details': trade_details,
         'trade_summary': trade_summary,
         'position_snapshot': position_snapshot,
+        'etf_summary': etf_summary,
         'signal_summary': {
             'current_action': latest['signal_action'],
             'current_position': int(latest['position']),

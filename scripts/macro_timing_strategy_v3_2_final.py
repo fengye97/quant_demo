@@ -38,9 +38,9 @@ for code, col in [("NASDAQ100_FRED","NDX"), ("SP500_FRED","SPX"),
     panel[col] = to_daily(load(code), col)[col]
 panel["HYS_proxy"] = panel["HYS"].fillna(panel["VIX"] / 5.0)
 
-def zscore(s, window=252*5, min_periods=252):
-    mu = s.rolling(window, min_periods=min_periods).mean()
-    std = s.rolling(window, min_periods=min_periods).std()
+def zscore(s, min_periods=252):
+    mu = s.expanding(min_periods=min_periods).mean()
+    std = s.expanding(min_periods=min_periods).std()
     return ((s - mu) / (std + 1e-9)).clip(-3, 3)
 
 def build_factors(df):

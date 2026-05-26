@@ -754,3 +754,49 @@ Holdout 区间：`2025-12-01 → 2026-05-23`，112 bars。Holdout 报告**纯展
 
 - 当前实现下 `FULL_NAV_FLOOR_RATIO` 是脚本顶层常量，未做 CLI 参数；后续若要做 sensitivity test（如 floor=1.02 / 1.05 看落地率），需先把它改成 `argparse` 入参。
 - comparison 脚本 `/tmp/quant_verify/compare_defaults_vs_bestprofile.py` 是一次性诊断工具，不在 `scripts/` 中持久化；下一轮做 walk-forward 重跑时应固化为 `scripts/audit_best_profile_vs_default.py`。
+
+### 13.8 美股数据审计补充（2026-05-23 夜间）— Fed cycle / MacroV32 之前的前置阻塞
+
+这次补充审计的核心，不是发现了“美股 ETF fake 历史”，而是确认了：**当前美股 timing 生产链虽然本地运行态自洽，但 qfq vs legacy 的价格口径还没有被正式锁死**。因此，Phase 3 里任何 Fed cycle / MacroV32 辅助择时实验，都必须排在这条数据口径清理之后。
+
+#### 已确认结论
+
+1. **未发现 fake ETF 上市前历史**。
+   - 纳指代理 ETF 历史起点：`2015-07-13`
+   - 标普 500 代理 ETF 历史起点：`2014-01-15`
+2. **当前生产链实际依赖 legacy 未复权 ETF 缓存，而不是注释宣称的 qfq 主路径**。
+   - 磁盘上当前只有：
+     - `stock_trade_demo/.cache/timing_etf/nasdaq_etf_daily.csv`
+     - `stock_trade_demo/.cache/timing_etf/sp500_etf_daily.csv`
+   - **没有** `nasdaq_etf_daily_qfq.csv` / `sp500_etf_daily_qfq.csv` 这类已落盘的 qfq 主缓存。
+3. **信号面板与成交价格目前分属两条链**：
+   - `build_us_index_panel()` 通过 `stock_trade_demo/index_data.py:get_index_daily()` 读取 `.cache/nasdaq_daily.csv` / `.cache/sp500_daily.csv`
+   - `stock_trade_demo/timing/backtest.py:_attach_etf_prices()` 通过 `get_timing_etf_daily()` 读取 timing ETF 缓存
+4. **当前本地缓存重叠日期价格比值均为 1.0**。
+   - `nasdaq_daily.csv` vs `timing_etf/nasdaq_etf_daily.csv`
+   - `sp500_daily.csv` vs `timing_etf/sp500_etf_daily.csv`
+   这说明当前运行态是**自洽的 legacy 链**，但并不等于“qfq 主链已验证通过”。
+5. **FRED / MacroV32 链路基本自洽，但有两个必须显式记录的限制**：
+   - `MacroV32TimingStrategy._build_macro_panel()` 对 FRED 序列使用日频 `ffill`，**未显式建模发布时间 / 可交易发布日期**。
+   - `HYS_proxy = HYS.fillna(VIX/5)` 是研究 proxy，不是真实完整信用利差历史。
+
+#### 这意味着什么
+
+- 当前审计结果应表述为：**“fake 数据暂未发现，但还不能直接进入 Fed cycle 策略实验。”**
+- 真正的阻塞点不是“数据明显错误”，而是**生产链口径尚未审计闭环**：注释、预期主路径、磁盘缓存、运行时命中文件之间还没有形成一条可追溯的 qfq 主链。
+- 所以，现阶段若继续推进 Fed cycle / MacroV32 特征实验，新增收益即使看上去成立，也可能混入“价格口径不一致”带来的伪改善或伪稳定性。
+
+#### 后续工作顺序（必须按这个顺序）
+
+1. **先把 `get_timing_etf_daily()` 当前实际命中的真实文件路径与口径打到日志里**。
+   - 必须能明确区分：命中的是 qfq 还是 legacy、主路径还是 fallback、具体文件名是什么。
+2. **生成 / 重建真正的 `*_qfq.csv`**。
+   - 至少补齐纳指与标普两条 ETF 日线缓存的 qfq 版本，并核对起始日期、字段完整性与复权效果。
+3. **对比 qfq vs legacy 未复权在分红 / 跳点处的差异**。
+   - 重点看除息日前后 open/close 跳变、累计净值差、信号触发差、成交价差。
+4. **明确 `build_us_index_panel()` 与 `_attach_etf_prices()` 的统一口径策略**。
+   - 如果仍保留“双链”结构，就必须把“信号面板用什么、成交估值用什么、两者如何对齐”写成可审计规则。
+5. **完成一轮 qfq 主链验证**。
+   - 只有确认 qfq 缓存真实存在、运行时优先命中、与 legacy 差异已审清，才能视为“美股价格主链已清理完”。
+6. **最后才进入 Fed cycle / MacroV32 特征实验**。
+   - 也就是说：**先清理 qfq/legacy 口径，再做 Fed cycle 实验**，这条顺序不能颠倒。

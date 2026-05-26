@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
 TIMING_ETF_CACHE_DIR = os.path.join(CACHE_DIR, 'timing_etf')
+A_SHARE_CALENDAR_CACHE_FILE = os.path.join(CACHE_DIR, 'a_share_calendar_daily.csv')
 
 INDEX_CONFIGS = {
     'csi1000': {
@@ -125,6 +126,10 @@ def _daily_cache_path(index_id):
     return os.path.join(CACHE_DIR, INDEX_CONFIGS[index_id]['daily_cache_file'])
 
 
+def _a_share_calendar_cache_path():
+    return A_SHARE_CALENDAR_CACHE_FILE
+
+
 def _ensure_cache_dir(path):
     os.makedirs(path, exist_ok=True)
 
@@ -230,26 +235,128 @@ def get_index_daily(index_id='csi1000', force_refetch=False):
 
     cfg = INDEX_CONFIGS[index_id]
     cache_file = _daily_cache_path(index_id)
+    cached_df = None
 
-    if not force_refetch and os.path.exists(cache_file):
-        df = pd.read_csv(cache_file, parse_dates=['date'])
-        return df.sort_values('date').reset_index(drop=True)
+    if os.path.exists(cache_file):
+        cached_df = pd.read_csv(cache_file, parse_dates=['date']).sort_values('date').reset_index(drop=True)
+        if not force_refetch:
+            return cached_df
 
     os.makedirs(CACHE_DIR, exist_ok=True)
 
     try:
         print(f"[index_data] Fetching {cfg['name']} daily K-line from Sina...")
-        df_daily = _fetch_daily_kline(cfg['symbol'])
+        df_daily = _fetch_daily_kline(cfg['symbol']).sort_values('date').reset_index(drop=True)
+        fetched_max = pd.to_datetime(df_daily['date']).max() if len(df_daily) > 0 else None
+        cached_max = pd.to_datetime(cached_df['date']).max() if cached_df is not None and len(cached_df) > 0 else None
+
+        if cached_max is not None and fetched_max is not None and fetched_max < cached_max:
+            print(f"[index_data] WARN fetched {cfg['name']} daily data is stale ({fetched_max.strftime('%Y-%m-%d')} < cached {cached_max.strftime('%Y-%m-%d')}); keep existing cache")
+            return cached_df
+
+        if cached_max is not None and fetched_max is not None and fetched_max == cached_max and cached_df is not None and len(cached_df) >= len(df_daily):
+            print(f"[index_data] {cfg['name']} daily cache already fresh through {cached_max.strftime('%Y-%m-%d')}; skip overwrite")
+            return cached_df
+
         df_daily.to_csv(cache_file, index=False)
         print(f"[index_data] Cached daily K-line to {cache_file}")
         return df_daily
     except Exception as e:
         print(f"[index_data] ERROR fetching {cfg['name']} daily K-line: {e}")
-        if os.path.exists(cache_file):
+        if cached_df is not None:
             print(f"[index_data] Falling back to cached daily K-line for {cfg['name']}")
-            df = pd.read_csv(cache_file, parse_dates=['date'])
-            return df.sort_values('date').reset_index(drop=True)
+            return cached_df
         raise RuntimeError(f"Failed to fetch {cfg['name']} daily data and no cache exists: {e}")
+
+
+def get_a_share_trading_calendar(force_refetch=False):
+    """Get a full-history A-share trading calendar from broad market index daily bars."""
+    cache_file = _a_share_calendar_cache_path()
+    cached_df = None
+
+    if os.path.exists(cache_file):
+        cached_df = pd.read_csv(cache_file, parse_dates=['date']).sort_values('date').reset_index(drop=True)
+        if not force_refetch:
+            return cached_df
+
+    _ensure_cache_dir(CACHE_DIR)
+
+    for symbol in ('sh000001', 'sz399001'):
+        try:
+            df_daily = _fetch_daily_kline(symbol).sort_values('date').reset_index(drop=True)
+        except Exception:
+            continue
+        fetched_max = pd.to_datetime(df_daily['date']).max() if len(df_daily) > 0 else None
+        cached_max = pd.to_datetime(cached_df['date']).max() if cached_df is not None and len(cached_df) > 0 else None
+        if cached_max is not None and fetched_max is not None and fetched_max < cached_max:
+            continue
+        if cached_max is not None and fetched_max is not None and fetched_max == cached_max and cached_df is not None and len(cached_df) >= len(df_daily):
+            return cached_df
+        df_daily[['date']].to_csv(cache_file, index=False)
+        return df_daily[['date']]
+
+    if cached_df is not None:
+        return cached_df[['date']] if 'date' in cached_df.columns else cached_df
+    raise RuntimeError('Failed to fetch A-share trading calendar and no cache exists.')
+
+
+def describe_timing_etf_cache(index_id='csi1000', adjust=None):
+    """Describe all known cache paths for a timing ETF and the current preferred order."""
+    if index_id not in TIMING_ETF_CONFIGS:
+        raise ValueError(f'Unknown ETF timing index_id: {index_id}')
+
+    cfg = TIMING_ETF_CONFIGS[index_id]
+    if adjust is None:
+        adjust = cfg.get('dividend_adjust_method', 'qfq')
+
+    candidates = [
+        ('preferred_qfq_cache', _etf_daily_cache_path(index_id, adjust=adjust)),
+        ('legacy_subdir_cache', _legacy_etf_daily_cache_path_in_subdir(index_id)),
+        ('legacy_root_cache', _legacy_etf_daily_cache_path(index_id)),
+    ]
+    rows = []
+    for label, path in candidates:
+        item = {
+            'label': label,
+            'path': path,
+            'exists': os.path.exists(path),
+            'adjust': adjust if label == 'preferred_qfq_cache' else 'legacy_unadjusted',
+            'rows': 0,
+            'start_date': None,
+            'end_date': None,
+            'columns': [],
+            'read_error': None,
+        }
+        if item['exists']:
+            try:
+                df = pd.read_csv(path)
+                item['rows'] = int(len(df))
+                item['columns'] = list(df.columns)
+                if 'date' in df.columns and len(df) > 0:
+                    s = pd.to_datetime(df['date'], errors='coerce').dropna()
+                    if len(s) > 0:
+                        item['start_date'] = s.min().strftime('%Y-%m-%d')
+                        item['end_date'] = s.max().strftime('%Y-%m-%d')
+            except Exception as exc:
+                item['read_error'] = repr(exc)
+        rows.append(item)
+
+    preferred_runtime_path = None
+    if rows[0]['exists']:
+        preferred_runtime_path = rows[0]['path']
+    elif rows[1]['exists']:
+        preferred_runtime_path = rows[1]['path']
+    elif rows[2]['exists']:
+        preferred_runtime_path = rows[2]['path']
+
+    return {
+        'index_id': index_id,
+        'code': cfg.get('code'),
+        'symbol': cfg.get('symbol'),
+        'default_adjust': adjust,
+        'preferred_runtime_path': preferred_runtime_path,
+        'candidates': rows,
+    }
 
 
 def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
@@ -271,6 +378,7 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
     legacy_sub_cache_file = _legacy_etf_daily_cache_path_in_subdir(index_id)
 
     if not force_refetch and os.path.exists(cache_file):
+        print(f"[index_data] Using preferred ETF cache for {cfg['name']}: {cache_file}")
         df = pd.read_csv(cache_file, parse_dates=['date'])
         return df.sort_values('date').reset_index(drop=True)
 

@@ -1,0 +1,88 @@
+{
+  "strategy_id": "macro_v32_timing",
+  "training_cutoff": "2025-11-30",
+  "generated_at": "2026-05-25T16:21:56",
+  "training_data_policy": {
+    "mode": "full_pre_cutoff"
+  },
+  "score_formula": "window_score = (excess_return - 1.5*max(0, dd_excess)) * 100; score = 0.4*ws(6m) + 0.3*ws(1y) + 0.3*ws(full_pre_cutoff) [discard: any window excess_ret < -5.0pp or dd_excess > 5.0pp; full_nav >= 1.00*default]",
+  "maxdd_threshold": 0.2,
+  "excess_return_tolerance_pct": 5.0,
+  "dd_excess_tolerance_pct": 5.0,
+  "dd_excess_penalty": 1.5,
+  "full_nav_floor_ratio": 1.0,
+  "default_full_nav": 4.1012,
+  "fallback_to_default": true,
+  "score": NaN,
+  "tuned_params": {
+    "sigmoid_k": 1.2,
+    "max_leverage": 1.4,
+    "base_position": 0.45,
+    "inertia": 0.05,
+    "crisis_vix": 40.0,
+    "fed_block_weight": 0.25,
+    "restrictive_threshold": 0.4,
+    "pivot_relief": 0.6,
+    "base_floor": 0.5
+  },
+  "all_params": {
+    "exposure_mode": "staged",
+    "enter_threshold": 0.55,
+    "add_threshold": 0.75,
+    "trim_threshold": 0.35,
+    "exit_threshold": 0.15,
+    "confirm_days": 1,
+    "max_entry_exposure": 1.0,
+    "sigmoid_k": 1.2,
+    "max_leverage": 1.4,
+    "base_position": 0.45,
+    "inertia": 0.05,
+    "crisis_vix": 40.0,
+    "fed_block_weight": 0.25,
+    "restrictive_threshold": 0.4,
+    "pivot_relief": 0.6,
+    "base_floor": 0.5
+  },
+  "window_metrics": {
+    "recent_6m": {
+      "final_nav": 1.1942,
+      "total_return": 0.19419999999999993,
+      "annual_return": 0.4389,
+      "max_drawdown": -0.0659,
+      "calmar": 6.66,
+      "rebalance_count": 1,
+      "avg_exposure": 0.9148,
+      "etf_total_return": 0.2143459915611814,
+      "etf_max_drawdown": -0.07089804186360582,
+      "excess_return": -0.020145991561181464,
+      "dd_excess": -0.0049980418636058205
+    },
+    "recent_1y": {
+      "final_nav": 1.1817,
+      "total_return": 0.18169999999999997,
+      "annual_return": 0.1839,
+      "max_drawdown": -0.1993,
+      "calmar": 0.92,
+      "rebalance_count": 4,
+      "avg_exposure": 0.8668,
+      "etf_total_return": 0.21949152542372885,
+      "etf_max_drawdown": -0.24725274725274726,
+      "excess_return": -0.03779152542372888,
+      "dd_excess": -0.04795274725274726
+    },
+    "full_pre_cutoff": {
+      "final_nav": 4.1012,
+      "total_return": 3.1012000000000004,
+      "annual_return": 0.14550000000000002,
+      "max_drawdown": -0.19920000000000002,
+      "calmar": 0.73,
+      "rebalance_count": 56,
+      "avg_exposure": 0.6569,
+      "etf_total_return": 4.946280991735538,
+      "etf_max_drawdown": -0.3112582781456954,
+      "excess_return": -1.8450809917355375,
+      "dd_excess": -0.11205827814569538
+    }
+  },
+  "grid_size": 576
+}

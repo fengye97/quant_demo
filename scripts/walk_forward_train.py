@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 """离线递进微调 pipeline (Phase 2)
 
-为 5 个 timing 策略（csi1000/star50/chinext/nasdaq/sp500）做参数网格搜索：
+为 5 个 timing 策略（csi1000/star50/chinext/macro_v32/sp500）做参数网格搜索。
+注：纯技术 nasdaq_timing 已在 2026-05-25 下线（OOS 实测仅 -0.19% 年化，无 alpha），
+纳指方向统一由宏观多因子 macro_v32_timing 承担。
 
 1. 训练 cutoff = 2025-11-30；所有 fit / score 都只用 cutoff 之前的数据。
 2. 对每个参数组合：在 cutoff 之前的 panel 上跑一次 run_timing_backtest，
    再用 filter_timing_result(start, end=cutoff) 触发 cold-start 重算，分别
-   在 6m (2025-06-01→cutoff) 和 1y (2024-12-01→cutoff) 两个窗口上计算 Calmar。
-3. 评分: score = 0.6 * Calmar(6m) + 0.4 * Calmar(1y)
-4. 风险约束: 任一窗口 |maxDD| > 0.20 ⇒ score = -inf
+   在 recent_6m / recent_1y / full_pre_cutoff 三个窗口上计算 Calmar。
+3. 评分: score = 0.4 * Calmar(6m) + 0.3 * Calmar(1y) + 0.3 * Calmar(full_pre_cutoff)
+4. 风险约束: 任一窗口 |maxDD| > 0.20 ⇒ score = -inf；full_pre_cutoff final_nav
+   还必须满足 FULL_NAV_FLOOR_RATIO * default_full_nav 的硬约束。
 5. 最优组合写入 strategy/best_profile_{name}.json；全网格审计日志写入
    strategy/walk_forward_log_{name}.csv
 
@@ -38,7 +41,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 _DEMO_ROOT = os.path.join(_REPO_ROOT, 'stock_trade_demo')
 sys.path.insert(0, _DEMO_ROOT)
 
-from index_data import build_index_panel, build_us_index_panel  # noqa: E402
+from index_data import build_index_panel, build_us_index_panel, describe_timing_etf_cache  # noqa: E402
 from timing.backtest import (  # noqa: E402
     evaluate_timing_result,
     filter_timing_result,
@@ -47,7 +50,7 @@ from timing.backtest import (  # noqa: E402
 from timing.strategies import (  # noqa: E402
     ChiNextTimingStrategy,
     CSI1000TimingStrategy,
-    NasdaqTimingStrategy,
+    MacroV32TimingStrategy,
     SP500TimingStrategy,
     Star50TimingStrategy,
 )
@@ -57,30 +60,48 @@ TRAINING_CUTOFF = pd.Timestamp('2025-11-30')
 WINDOW_6M_START = pd.Timestamp('2025-06-01')
 WINDOW_1Y_START = pd.Timestamp('2024-12-01')
 
-# v2 评分公式（修正后记 2026-05-23）：把 cutoff 之前的"全历史"Calmar 也纳入加权，
-# 避免上一版只看近端 6m/1y Calmar 导致 csi1000 全历史年化从 4.57% 跌到 0.98%。
-# score = 0.4 * Calmar(recent_6m) + 0.3 * Calmar(recent_1y) + 0.3 * Calmar(full_pre_cutoff)
+# v3 评分公式（CLAUDE.md Rule 14，2026-05-25）：把基准从 Calmar 换成 ETF-relative：
+#   window_score = excess_return_pct(策略 vs ETF) - λ * max(0, dd_excess_pct)
+#     excess_return_pct = strategy_total_return - etf_total_return
+#     dd_excess_pct     = |strategy_mdd| - |etf_mdd|  （正值表示策略回撤比 ETF 更深）
+#   score = 0.4 * window_score(recent_6m) + 0.3 * window_score(recent_1y) + 0.3 * window_score(full_pre_cutoff)
+# 这条评分直接对齐 CLAUDE.md Rule 14：「收益和回撤都要跑赢 ETF」。
 SCORE_WEIGHTS = {'recent_6m': 0.4, 'recent_1y': 0.3, 'full_pre_cutoff': 0.3}
-# 任一窗口 |maxDD| > MAX_DD_THRESHOLD ⇒ 该参数组合被丢弃
+DD_EXCESS_PENALTY = 1.5   # λ：策略 MDD 比 ETF 深的部分，按 1.5× 罚到分数里
+# 任一窗口 |maxDD| > MAX_DD_THRESHOLD ⇒ 该参数组合被丢弃（绝对地板，跟 v2 保持一致）
 MAX_DD_THRESHOLD = 0.20
-# 全历史不退步硬约束：候选必须满足 full_final_nav >= FULL_NAV_FLOOR_RATIO * default_full_nav
-# 其中 default 取 STRATEGY_SPECS 里的"出厂 tuned"（即 timing/strategies.py:__init__ 默认值）。
-# 全部数据仍只用 cutoff 之前的 panel，无 look-ahead。
-# 2026-05-23 收紧到 1.00（用户要求"收益不能下降"）。任何 candidate 必须 full_nav >= default 才能入选；
-# 否则一律 fallback_to_default。
+# ETF 跑输容忍带（百分点）：任一窗口 strategy_return - etf_return < -BAND ⇒ 丢弃。
+# 设为 5% 是给「全历史」窗口留出空间——长牛中允许有限跑输，但近端窗口里若严重落后必须 drop。
+EXCESS_RETURN_TOLERANCE_PCT = 5.0
+# ETF MDD 容忍带：strategy 比 ETF 深超过 DD_EXCESS_TOLERANCE_PCT 也丢弃。
+DD_EXCESS_TOLERANCE_PCT = 5.0
+# 全历史 final_nav 不退步硬约束（兜底）：避免 best_profile 用「短期超越 ETF」换走全历史净值。
 FULL_NAV_FLOOR_RATIO = 1.00
 # 出厂 tuned（必须与 timing/strategies.py 各策略类 __init__ 默认值保持一致）。
 # 用于 FULL_NAV_FLOOR_RATIO 约束的基准点。
 DEFAULT_TUNED = {
-    'csi1000_timing': {'breakout_window': 15, 'exit_window': 7, 'trend_window': 50},
-    'star50_timing':  {'breakout_window': 10, 'exit_window': 5, 'trend_window': 40},
+    'csi1000_timing': {'breakout_window': 15, 'exit_window': 7, 'trend_window': 50, 'base_floor': 0.5},
+    'star50_timing':  {'breakout_window': 10, 'exit_window': 5, 'trend_window': 40, 'base_floor': 0.5},
     'chinext_timing': {'momentum_short_window': 15, 'momentum_long_window': 40,
-                       'trend_window': 40, 'momentum_threshold': 0.02},
-    'nasdaq_timing':  {'fast_window': 20, 'slow_window': 120, 'momentum_window': 120},
-    'sp500_timing':   {'fast_window': 20, 'slow_window': 125, 'momentum_window': 100},
+                       'trend_window': 40, 'momentum_threshold': 0.02, 'base_floor': 0.5},
+    'macro_v32_timing': {'sigmoid_k': 1.2, 'max_leverage': 1.4, 'base_position': 0.45,
+                         'inertia': 0.05, 'crisis_vix': 40.0,
+                         'fed_block_weight': 0.25, 'restrictive_threshold': 0.40, 'pivot_relief': 0.60,
+                         'base_floor': 0.5},
+    'sp500_timing':   {'fast_window': 20, 'slow_window': 125, 'momentum_window': 100, 'base_floor': 0.5},
 }
 
 OUTPUT_DIR = os.path.join(_REPO_ROOT, 'strategy')
+
+US_STRATEGY_INDEX_ID = {
+    'macro_v32_timing': 'nasdaq',
+    'sp500_timing': 'sp500',
+}
+# qfq 主链尚未稳定落盘时，US 策略仅在 legacy 结构性跳点之后的 clean window 上训练/评估。
+LEGACY_CLEAN_STARTS = {
+    'nasdaq': pd.Timestamp('2022-07-06'),
+    'sp500': pd.Timestamp('2022-03-31'),
+}
 
 
 SHARED_REALISM = {
@@ -98,6 +119,9 @@ SHARED_REALISM = {
     'limit_max_delay_days': 5,
 }
 
+# CLAUDE.md Rule 14：base_floor 走 grid 搜索，不进 SHARED_REALISM 的 setattr 链
+BASE_FLOOR_GRID = [0.3, 0.5, 0.7]
+
 
 # 每个策略包含: cls, panel_kind ('cn'/'us'), base_defaults, grid, tunable_keys
 STRATEGY_SPECS = {
@@ -113,6 +137,7 @@ STRATEGY_SPECS = {
             'breakout_window': [10, 15, 20, 25],
             'exit_window': [5, 7, 10],
             'trend_window': [30, 50, 80],
+            'base_floor': BASE_FLOOR_GRID,
         },
     },
     'star50_timing': {
@@ -127,6 +152,7 @@ STRATEGY_SPECS = {
             'breakout_window': [8, 10, 15, 20],
             'exit_window': [3, 5, 8],
             'trend_window': [30, 40, 60],
+            'base_floor': BASE_FLOOR_GRID,
         },
     },
     'chinext_timing': {
@@ -142,20 +168,27 @@ STRATEGY_SPECS = {
             'momentum_long_window': [30, 40, 60],
             'trend_window': [30, 40, 60],
             'momentum_threshold': [0.0, 0.01, 0.02],
+            'base_floor': BASE_FLOOR_GRID,
         },
     },
-    'nasdaq_timing': {
-        'cls': NasdaqTimingStrategy,
+    'macro_v32_timing': {
+        'cls': MacroV32TimingStrategy,
         'panel': 'us',
         'base': {
             'exposure_mode': 'staged', 'enter_threshold': 0.55, 'add_threshold': 0.75,
-            'trim_threshold': 0.35, 'exit_threshold': 0.15, 'confirm_days': 2,
-            'max_entry_exposure': 0.5,
+            'trim_threshold': 0.35, 'exit_threshold': 0.15, 'confirm_days': 1,
+            'max_entry_exposure': 1.0,
         },
         'grid': {
-            'fast_window': [15, 20, 25],
-            'slow_window': [100, 120, 150],
-            'momentum_window': [100, 120, 150],
+            'sigmoid_k': [1.1, 1.2],
+            'max_leverage': [1.3, 1.4],
+            'base_position': [0.45, 0.5],
+            'inertia': [0.05],
+            'crisis_vix': [38.0, 40.0],
+            'fed_block_weight': [0.25, 0.30, 0.35],
+            'restrictive_threshold': [0.4, 0.5],
+            'pivot_relief': [0.6, 0.8],
+            'base_floor': BASE_FLOOR_GRID,
         },
     },
     'sp500_timing': {
@@ -170,6 +203,7 @@ STRATEGY_SPECS = {
             'fast_window': [15, 20, 30],
             'slow_window': [100, 125, 150],
             'momentum_window': [80, 100, 125],
+            'base_floor': BASE_FLOOR_GRID,
         },
     },
 }
@@ -191,6 +225,7 @@ def _extract_metric_floats(metrics: dict) -> dict:
     out = {}
     cum = metrics.get('累积净值')
     out['final_nav'] = float(cum) if cum is not None else float('nan')
+    out['total_return'] = (out['final_nav'] - 1.0) if not np.isnan(out['final_nav']) else float('nan')
 
     ann = metrics.get('年化收益', '')
     if isinstance(ann, str) and ann.endswith('%'):
@@ -218,14 +253,34 @@ def _extract_metric_floats(metrics: dict) -> dict:
     return out
 
 
+def _compute_etf_window_metrics(result_df: pd.DataFrame) -> dict | None:
+    """从 sliced result 的 etf_close 列直接算 ETF buy-and-hold 在窗口内的累计收益 / 最大回撤。"""
+    if result_df is None or len(result_df) == 0 or 'etf_close' not in result_df.columns:
+        return None
+    closes = pd.to_numeric(result_df['etf_close'], errors='coerce').dropna()
+    if len(closes) < 2:
+        return None
+    closes = closes.reset_index(drop=True)
+    total_return = float(closes.iloc[-1] / closes.iloc[0] - 1.0)
+    cummax = closes.cummax()
+    drawdown = closes / cummax - 1.0
+    mdd = float(drawdown.min())  # 负数
+    return {'total_return': total_return, 'max_drawdown': mdd}
+
+
 def _evaluate_one(spec, grid_point, panel_pre_cutoff, default_full_nav=None):
     """在 cutoff 之前的 panel 上跑回测，并在 6m/1y/full_pre_cutoff 三窗口上做 cold-start 评分。
 
-    v2 评分（修正后记 2026-05-23）：
-      - score = 0.4*Calmar(6m) + 0.3*Calmar(1y) + 0.3*Calmar(full_pre_cutoff)
-      - 任一窗口 |maxDD| > MAX_DD_THRESHOLD ⇒ 丢弃
-      - 若提供 default_full_nav，则要求 full_pre_cutoff 的 final_nav ≥ FULL_NAV_FLOOR_RATIO*default_full_nav，
-        否则丢弃。该约束保证 best 不会以"换全历史收益"换近端 Calmar。
+    v3 评分（CLAUDE.md Rule 14，2026-05-25）：ETF-relative。
+      window_score = (strategy_total_return - etf_total_return) * 100
+                     - DD_EXCESS_PENALTY * max(0, |strategy_mdd| - |etf_mdd|) * 100
+      score = 0.4*window_score(6m) + 0.3*window_score(1y) + 0.3*window_score(full_pre_cutoff)
+
+    丢弃条件：
+      - 任一窗口 |maxDD| > MAX_DD_THRESHOLD（绝对地板，0.20）
+      - 任一窗口 strategy_return - etf_return < -EXCESS_RETURN_TOLERANCE_PCT
+      - 任一窗口 |strategy_mdd| - |etf_mdd| > DD_EXCESS_TOLERANCE_PCT
+      - full_pre_cutoff final_nav < FULL_NAV_FLOOR_RATIO * default_full_nav
     """
     strategy = _build_strategy(spec, grid_point)
     signal_df = strategy.run(panel_pre_cutoff.copy())
@@ -244,22 +299,50 @@ def _evaluate_one(spec, grid_point, panel_pre_cutoff, default_full_nav=None):
             window_metrics[name] = None
             continue
         m = evaluate_timing_result(sliced, benchmark_returns=None, reset_capital=True)
-        window_metrics[name] = _extract_metric_floats(m)
+        wm = _extract_metric_floats(m)
+        etf_metrics = _compute_etf_window_metrics(sliced)
+        if etf_metrics is not None:
+            wm['etf_total_return'] = etf_metrics['total_return']
+            wm['etf_max_drawdown'] = etf_metrics['max_drawdown']
+            wm['excess_return'] = wm['total_return'] - etf_metrics['total_return']
+            wm['dd_excess'] = abs(wm['max_drawdown']) - abs(etf_metrics['max_drawdown'])
+        else:
+            wm['etf_total_return'] = float('nan')
+            wm['etf_max_drawdown'] = float('nan')
+            wm['excess_return'] = float('nan')
+            wm['dd_excess'] = float('nan')
+        window_metrics[name] = wm
 
     # 评分
     score = 0.0
     discard_reason = None
     for name, weight in SCORE_WEIGHTS.items():
         wm = window_metrics.get(name)
-        if wm is None or np.isnan(wm['calmar']):
+        if wm is None:
             score = float('-inf')
-            discard_reason = f'{name} 无法计算 Calmar'
+            discard_reason = f'{name} 无窗口数据'
+            break
+        if np.isnan(wm['excess_return']) or np.isnan(wm['dd_excess']):
+            score = float('-inf')
+            discard_reason = f'{name} 无 ETF 基线（etf_close 缺失）'
             break
         if abs(wm['max_drawdown']) > MAX_DD_THRESHOLD:
             score = float('-inf')
-            discard_reason = f'{name} maxDD={wm["max_drawdown"]:.4f} 超过阈值 {MAX_DD_THRESHOLD}'
+            discard_reason = f'{name} maxDD={wm["max_drawdown"]:.4f} 超过绝对阈值 {MAX_DD_THRESHOLD}'
             break
-        score += weight * wm['calmar']
+        if wm['excess_return'] * 100.0 < -EXCESS_RETURN_TOLERANCE_PCT:
+            score = float('-inf')
+            discard_reason = (f'{name} 跑输 ETF {wm["excess_return"]*100:.2f}pp '
+                              f'超过容忍带 {-EXCESS_RETURN_TOLERANCE_PCT}pp')
+            break
+        if wm['dd_excess'] * 100.0 > DD_EXCESS_TOLERANCE_PCT:
+            score = float('-inf')
+            discard_reason = (f'{name} 回撤比 ETF 深 {wm["dd_excess"]*100:.2f}pp '
+                              f'超过容忍带 {DD_EXCESS_TOLERANCE_PCT}pp')
+            break
+        window_score = (wm['excess_return'] * 100.0
+                        - DD_EXCESS_PENALTY * max(0.0, wm['dd_excess']) * 100.0)
+        score += weight * window_score
 
     # 全历史不退步硬约束（仅当传入了 default_full_nav 才生效）
     if discard_reason is None and default_full_nav is not None:
@@ -295,11 +378,36 @@ def _slice_panel_pre_cutoff(panel: pd.DataFrame) -> pd.DataFrame:
     return df[df['交易日期'] <= TRAINING_CUTOFF].reset_index(drop=True)
 
 
+def _maybe_apply_us_clean_window(panel: pd.DataFrame, strategy_id: str) -> tuple[pd.DataFrame, dict | None]:
+    index_id = US_STRATEGY_INDEX_ID.get(strategy_id)
+    if not index_id:
+        return panel, None
+    cache_info = describe_timing_etf_cache(index_id=index_id)
+    preferred = (cache_info or {}).get('preferred_runtime_path') or ''
+    clean_start = LEGACY_CLEAN_STARTS.get(index_id)
+    if preferred.endswith('_qfq.csv') or clean_start is None:
+        return panel, None
+    out = panel.copy()
+    out['交易日期'] = pd.to_datetime(out['交易日期'])
+    out = out[out['交易日期'] >= clean_start].reset_index(drop=True)
+    return out, {
+        'index_id': index_id,
+        'clean_start': clean_start.strftime('%Y-%m-%d'),
+        'preferred_runtime_path': preferred,
+        'reason': 'preferred_runtime_path 仍为 legacy 未复权缓存，避开已知结构性跳点之前的历史段',
+    }
+
+
 def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
                       dry_run: bool = False) -> dict:
     spec = STRATEGY_SPECS[strategy_id]
     grid_points = list(_grid_iter(spec['grid']))
+    clean_window_meta = None
+    if not dry_run and spec['panel'] == 'us':
+        panel_pre_cutoff, clean_window_meta = _maybe_apply_us_clean_window(panel_pre_cutoff, strategy_id)
     print(f"\n=== {strategy_id}: {len(grid_points)} grid points ===", flush=True)
+    if clean_window_meta:
+        print(f"  [clean-window] index={clean_window_meta['index_id']} start={clean_window_meta['clean_start']} path={clean_window_meta['preferred_runtime_path']}", flush=True)
     if dry_run:
         for gp in grid_points[:5]:
             print('  sample:', gp)
@@ -347,10 +455,14 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
                 row[f'{win_name}_calmar'] = float('nan')
                 row[f'{win_name}_maxdd'] = float('nan')
                 row[f'{win_name}_annret'] = float('nan')
+                row[f'{win_name}_excess_ret'] = float('nan')
+                row[f'{win_name}_dd_excess'] = float('nan')
                 continue
             row[f'{win_name}_calmar'] = win_metrics['calmar']
             row[f'{win_name}_maxdd'] = win_metrics['max_drawdown']
             row[f'{win_name}_annret'] = win_metrics['annual_return']
+            row[f'{win_name}_excess_ret'] = win_metrics.get('excess_return', float('nan'))
+            row[f'{win_name}_dd_excess'] = win_metrics.get('dd_excess', float('nan'))
         log_rows.append(row)
 
         if (i % 10 == 0) or i == len(grid_points):
@@ -377,9 +489,20 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
 
     fallback_used = False
     if best is None:
-        if default_tuned is not None and default_metrics is not None:
-            print(f"  [WARN] {strategy_id}: 无组合通过 maxDD<{MAX_DD_THRESHOLD} + full-nav-floor 约束；"
-                  f"回退到出厂 tuned {default_tuned}")
+        if default_tuned is not None:
+            # default_metrics 缺失 / 异常时仍要写 fallback profile：web 层至少能拿到
+            # training_cutoff / tuned_params / all_params；window_metrics 走 holdout 报告补齐。
+            if default_metrics is None:
+                print(f"  [WARN] {strategy_id}: 无组合通过约束且 default 评估异常；"
+                      f"仍按出厂 tuned 写 fallback profile（window_metrics 留空，由 holdout 报告补齐）")
+                default_metrics = {
+                    'recent_6m': None,
+                    'recent_1y': None,
+                    'full_pre_cutoff': None,
+                }
+            else:
+                print(f"  [WARN] {strategy_id}: 无组合通过 maxDD<{MAX_DD_THRESHOLD} + full-nav-floor 约束；"
+                      f"回退到出厂 tuned {default_tuned}")
             best = {
                 'grid_point': dict(default_tuned),
                 'windows': default_metrics,
@@ -398,11 +521,20 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
         'strategy_id': strategy_id,
         'training_cutoff': TRAINING_CUTOFF.strftime('%Y-%m-%d'),
         'generated_at': datetime.now().isoformat(timespec='seconds'),
-        'score_formula': (f"{SCORE_WEIGHTS['recent_6m']}*Calmar(6m) + "
-                          f"{SCORE_WEIGHTS['recent_1y']}*Calmar(1y) + "
-                          f"{SCORE_WEIGHTS['full_pre_cutoff']}*Calmar(full_pre_cutoff)  "
-                          f"[floor: full_nav >= {FULL_NAV_FLOOR_RATIO:.2f}*default]"),
+        'training_data_policy': clean_window_meta or {'mode': 'full_pre_cutoff'},
+        'score_formula': (
+            f"window_score = (excess_return - {DD_EXCESS_PENALTY}*max(0, dd_excess)) * 100; "
+            f"score = {SCORE_WEIGHTS['recent_6m']}*ws(6m) + "
+            f"{SCORE_WEIGHTS['recent_1y']}*ws(1y) + "
+            f"{SCORE_WEIGHTS['full_pre_cutoff']}*ws(full_pre_cutoff) "
+            f"[discard: any window excess_ret < -{EXCESS_RETURN_TOLERANCE_PCT}pp "
+            f"or dd_excess > {DD_EXCESS_TOLERANCE_PCT}pp; "
+            f"full_nav >= {FULL_NAV_FLOOR_RATIO:.2f}*default]"
+        ),
         'maxdd_threshold': MAX_DD_THRESHOLD,
+        'excess_return_tolerance_pct': EXCESS_RETURN_TOLERANCE_PCT,
+        'dd_excess_tolerance_pct': DD_EXCESS_TOLERANCE_PCT,
+        'dd_excess_penalty': DD_EXCESS_PENALTY,
         'full_nav_floor_ratio': FULL_NAV_FLOOR_RATIO,
         'default_full_nav': default_full_nav,
         'fallback_to_default': fallback_used,
@@ -420,7 +552,13 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
     for wname, wm in best['windows'].items():
         if wm is None:
             continue
-        print(f"    {wname}: calmar={wm['calmar']:.3f}  maxDD={wm['max_drawdown']:.3%}  annRet={wm['annual_return']:.3%}")
+        excess = wm.get('excess_return')
+        dd_exc = wm.get('dd_excess')
+        excess_str = f"{excess*100:+.2f}pp" if excess is not None and not np.isnan(excess) else 'n/a'
+        dd_str = f"{dd_exc*100:+.2f}pp" if dd_exc is not None and not np.isnan(dd_exc) else 'n/a'
+        print(f"    {wname}: ret={wm['total_return']*100:+.2f}% ETF={wm.get('etf_total_return', float('nan'))*100:+.2f}% "
+              f"excess={excess_str} | MDD={wm['max_drawdown']:.2%} ETF_MDD={wm.get('etf_max_drawdown', float('nan')):.2%} "
+              f"dd_excess={dd_str}")
     return {'strategy': strategy_id, 'best': best, 'grid_size': len(grid_points)}
 
 

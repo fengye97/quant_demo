@@ -451,6 +451,13 @@
   }
   .regime-bull { background: #ffeaa7; color: #d68910; }
   .regime-bear { background: #dfe6e9; color: #636e72; }
+
+  /* Sector heat ranking sidebar */
+  .heat-rank-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .heat-rank-table th { padding: 5px 8px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
+  .heat-rank-table td { padding: 5px 8px; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
+  .heat-rank-table .rank-num { color: var(--text-secondary); font-size: 11px; }
+  .heat-rank-bar { display: inline-block; height: 8px; border-radius: 4px; vertical-align: middle; min-width: 2px; }
 </style>
 </head>
 <body>
@@ -467,6 +474,7 @@
     <div style="display:flex; gap:8px;">
       <button class="btn btn-secondary" onclick="window.location.href='/timing'">A股择时</button>
       <button class="btn btn-secondary" onclick="window.location.href='/us_timing'">美股择时</button>
+      <button class="btn btn-secondary" onclick="window.location.href='/live'">实盘记录</button>
       <button class="btn btn-secondary" id="update-data-btn" onclick="triggerDataUpdate()">更新数据</button>
       <button class="btn btn-secondary" onclick="resetAll()">重置参数</button>
       <button class="btn btn-primary" onclick="runBacktest()">运行回测</button>
@@ -531,11 +539,27 @@
       <div style="display:flex; gap:8px; align-items:center;">
         <span style="font-size:13px;color:var(--text-secondary);" id="overview-date-range"></span>
         <span id="overview-zoom-btns"></span>
-        <button class="btn btn-orange" id="btn-overview-holdings" onclick="showHoldings()">查看持股明细 & 仓位</button>
+        <button class="btn btn-orange" id="btn-overview-holdings" onclick="showHoldings('overview')">查看持股明细 & 仓位</button>
       </div>
     </div>
     <div class="metrics-row" id="overview-metrics"></div>
     <div class="chart-box" id="chart-overview"></div>
+  </div>
+
+  <!-- ============ Recent Windows ============ -->
+  <div class="section-card" id="test-section">
+    <div class="section-header">
+      <div class="section-title">
+        近端验证区间 <span class="section-badge badge-test">1m / 1q / 6m</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span style="font-size:13px;color:var(--text-secondary);" id="test-date-range"></span>
+        <span id="test-zoom-btns"></span>
+        <button class="btn btn-orange" id="btn-holdings" onclick="showHoldings('test')">查看持股明细 & 仓位</button>
+      </div>
+    </div>
+    <div class="metrics-row" id="test-metrics"></div>
+    <div class="chart-box" id="chart-test"></div>
   </div>
 
   <!-- ============ Pre-6m History ============ -->
@@ -551,20 +575,20 @@
     <div class="chart-box" id="chart-train"></div>
   </div>
 
-  <!-- ============ Recent Windows ============ -->
-  <div class="section-card" id="test-section">
+  <!-- ============ Sector Heat ============ -->
+  <div class="section-card" id="sector-heat-section">
     <div class="section-header">
       <div class="section-title">
-        近端验证区间 <span class="section-badge badge-test">1m / 1q / 6m</span>
+        行业热度 <span class="section-badge" style="background:var(--purple);">近8周周涨跌幅</span>
       </div>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <span style="font-size:13px;color:var(--text-secondary);" id="test-date-range"></span>
-        <span id="test-zoom-btns"></span>
-        <button class="btn btn-orange" id="btn-holdings" onclick="showHoldings()">查看持股明细 & 仓位</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span style="font-size:12px;color:var(--text-secondary);">市值加权 · 申万一级 · 5个交易日/周</span>
       </div>
     </div>
-    <div class="metrics-row" id="test-metrics"></div>
-    <div class="chart-box" id="chart-test"></div>
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+      <div id="sector-heat-chart" style="flex:1;min-width:520px;height:480px;"></div>
+      <div id="sector-heat-ranking" style="min-width:180px;max-height:480px;overflow-y:auto;"></div>
+    </div>
   </div>
 
   <!-- ============ Factor Panel ============ -->
@@ -723,7 +747,16 @@ async function fetchDataInfo() {
     }
     const badge = document.getElementById('data-date-badge');
     if (badge && dataInfo.data_max_date) {
-      badge.textContent = '数据更新至: ' + dataInfo.data_max_date;
+      function fmtDate(d) {
+        const [y, m, day] = d.split('-');
+        return y + '年' + parseInt(m) + '月' + parseInt(day) + '日';
+      }
+      const maxFmt = fmtDate(dataInfo.data_max_date);
+      const minFmt = dataInfo.data_min_date ? fmtDate(dataInfo.data_min_date) : '';
+      badge.textContent = minFmt
+        ? '股票数据: ' + minFmt + ' ~ ' + maxFmt
+        : '数据截止: ' + maxFmt;
+      badge.title = '最新数据日期: ' + dataInfo.data_max_date;
     }
     // Set date input max to data max date
     const endInput = document.getElementById('end-date');
@@ -825,8 +858,9 @@ async function init() {
 
   stopLoadingTimer();
   hideLoading();
-  // Non-blocking: load single-factor backtest after main init (ensures factorOverview is set)
+  // Non-blocking: load single-factor backtest and sector heat after main init
   loadFactorBacktest(false);
+  loadSectorHeat();
 }
 
 async function loadStrategyList() {
@@ -1129,28 +1163,29 @@ function renderOverview() {
   updateOverviewBenchmark(backtestData.benchmark_curves || []);
 }
 
-function updateOverviewBenchmark(benchmarkCurves) {
-  const activeBenchmarkId = backtestData?.active_benchmark?.id;
-  let el = document.getElementById('overview-benchmark');
+function renderBenchmarkSummary(containerId, benchmarkCurves, strategyCurve, options = {}) {
+  const activeBenchmarkId = options.activeBenchmarkId || backtestData?.active_benchmark?.id;
+  let el = document.getElementById(containerId);
   if (!el) {
-    const metricsRow = document.getElementById('overview-metrics');
-    if (!metricsRow) return;
+    const anchor = document.getElementById(options.anchorId || 'overview-metrics');
+    if (!anchor) return;
     el = document.createElement('div');
-    el.id = 'overview-benchmark';
-    el.style.cssText = 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;';
-    metricsRow.parentNode.insertBefore(el, metricsRow.nextSibling);
+    el.id = containerId;
+    el.style.cssText = options.style || 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;';
+    anchor.parentNode.insertBefore(el, anchor.nextSibling);
   }
   if (!benchmarkCurves || benchmarkCurves.length === 0) {
     el.innerHTML = '<span style="color:var(--text-secondary);">暂无基准数据</span>';
     return;
   }
-  const stratFinal = (backtestData.equity_curve || []).length > 0
-    ? backtestData.equity_curve[backtestData.equity_curve.length - 1].value : 1;
+  const stratFinal = (strategyCurve || []).length > 0
+    ? Number(strategyCurve[strategyCurve.length - 1].value || 1)
+    : 1;
   el.innerHTML = benchmarkCurves.map(item => {
     const curve = item.curve || [];
     if (curve.length === 0) return '';
-    const bmFinal = curve[curve.length - 1].value;
-    const excess = item.excess_return_pct != null ? item.excess_return_pct : 0;
+    const bmFinal = Number(curve[curve.length - 1].value || 1);
+    const excess = item.excess_return_pct != null ? Number(item.excess_return_pct) : ((stratFinal - bmFinal) * 100);
     const color = excess >= 0 ? 'var(--green)' : 'var(--red)';
     const arrow = excess >= 0 ? '▲' : '▼';
     const activeBadge = item.id === activeBenchmarkId ? '<span style="margin-left:6px;background:var(--accent);color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;">当前归因基准</span>' : '';
@@ -1160,6 +1195,12 @@ function updateOverviewBenchmark(benchmarkCurves) {
       <span>${item.name} 跑赢/跑输: <b style="color:${color};">${arrow} ${Math.abs(excess).toFixed(2)}%</b></span>
     `;
   }).join('');
+}
+
+function updateOverviewBenchmark(benchmarkCurves) {
+  renderBenchmarkSummary('overview-benchmark', benchmarkCurves, backtestData.equity_curve || [], {
+    anchorId: 'overview-metrics',
+  });
 }
 
 
@@ -1199,7 +1240,7 @@ function renderTestSection() {
 
   renderMetricsRow('test-metrics', t);
   document.getElementById('test-date-range').textContent =
-    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月 · 资金重置`;
+    `${t.date_range.start} → ${t.date_range.end} · ${t.months}个月 · 默认展示近半年 · 资金重置`;
 
   const btn = document.getElementById('btn-holdings');
   if (t.holdings && t.holdings.length > 0) {
@@ -1256,6 +1297,11 @@ function renderTestSection() {
     });
   });
 
+  renderBenchmarkSummary('test-benchmark', benchmarkCurves, curve, {
+    anchorId: 'test-metrics',
+    style: 'margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;border:1px solid var(--border);',
+  });
+
   const option = {
     tooltip: {
       trigger: 'axis',
@@ -1288,6 +1334,13 @@ function renderTestSection() {
 function formatCurrency(value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatSignedCurrency(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  const normalized = Math.abs(Number(value)) < 0.005 ? 0 : Number(value);
+  const sign = normalized > 0 ? '+' : '';
+  return sign + normalized.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatPercent(value) {
@@ -1370,16 +1423,42 @@ function renderMetricsRow(containerId, data) {
 // ═══════════════════════════════════════════════════════════════
 // Holdings Modal
 // ═══════════════════════════════════════════════════════════════
-function showHoldings() {
+function showHoldings(source = 'auto') {
+  const holdingsContext = backtestData?.holdings_context;
   const recentWindow = backtestData?.interval_windows?.recent_6m;
   let holdings, title;
-  if (recentWindow?.holdings && recentWindow.holdings.length > 0) {
+
+  if (source === 'overview') {
+    if (holdingsContext?.holdings && holdingsContext.holdings.length > 0) {
+      holdings = holdingsContext.holdings;
+      const range = holdingsContext.date_range?.start && holdingsContext.date_range?.end
+        ? ` · ${holdingsContext.date_range.start} → ${holdingsContext.date_range.end}`
+        : '';
+      title = `${holdingsContext.label || '持股明细 & 仓位'}${range}`;
+    } else if (backtestData?.holdings && backtestData.holdings.length > 0) {
+      holdings = backtestData.holdings;
+      title = '持股明细 & 仓位';
+    }
+  } else if (source === 'test') {
+    if (recentWindow?.holdings && recentWindow.holdings.length > 0) {
+      holdings = recentWindow.holdings;
+      title = '近半年验证区间 · 持股明细 & 仓位';
+    }
+  } else if (holdingsContext?.holdings && holdingsContext.holdings.length > 0) {
+    holdings = holdingsContext.holdings;
+    const range = holdingsContext.date_range?.start && holdingsContext.date_range?.end
+      ? ` · ${holdingsContext.date_range.start} → ${holdingsContext.date_range.end}`
+      : '';
+    title = `${holdingsContext.label || '持股明细 & 仓位'}${range}`;
+  } else if (recentWindow?.holdings && recentWindow.holdings.length > 0) {
     holdings = recentWindow.holdings;
     title = '近半年验证区间 · 持股明细 & 仓位';
   } else if (backtestData?.holdings && backtestData.holdings.length > 0) {
     holdings = backtestData.holdings;
     title = '持股明细 & 仓位';
-  } else {
+  }
+
+  if (!holdings || holdings.length === 0) {
     return;
   }
 
@@ -1402,9 +1481,10 @@ function showHoldings() {
     let stockRows = '';
     if (stocks.length > 0) {
       stockRows = stocks.map((s, i) => {
-        const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const sellDisplay = s.sell_price != null
-          ? s.sell_price.toFixed(2)
+        const displayPnl = s.display_pnl != null ? s.display_pnl : (s.pnl || 0);
+        const pnlColor = displayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const latestPriceDisplay = s.latest_price != null
+          ? s.latest_price.toFixed(2)
           : '<span style="color:var(--text-secondary);">暂无</span>';
         const positionValueDisplay = s.position_market_value != null
           ? formatCurrency(s.position_market_value)
@@ -1448,11 +1528,11 @@ function showHoldings() {
           </td>
           <td style="text-align:right;">${(s.shares || 0).toLocaleString('zh-CN')}</td>
           <td style="text-align:right;">${(s.buy_price || 0).toFixed(2)}</td>
-          <td style="text-align:right;">${sellDisplay}</td>
+          <td style="text-align:right;">${latestPriceDisplay}</td>
           <td style="text-align:right;">${positionValueDisplay}</td>
           <td style="text-align:right;">${positionWeightDisplay}</td>
           <td style="text-align:right;color:${pnlColor};font-weight:600;">
-            ${s.pnl >= 0 ? '+' : ''}${s.pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
+            ${formatSignedCurrency(displayPnl)}
           </td>
         </tr>`;
       }).join('');
@@ -1476,6 +1556,7 @@ function showHoldings() {
       `).join('');
     }
 
+    const holdingRangeText = h.holding_date_range_label || ((h.holding_start_date && h.holding_end_date) ? `${h.holding_start_date} → ${h.holding_end_date}` : '');
     html += `
       <div class="holding-period">
         <div class="period-header">
@@ -1486,10 +1567,11 @@ function showHoldings() {
           <span style="font-size:13px;color:var(--text-secondary);">
             持仓 ${h.stock_count || h.count || stocks.length} 只 · 本金 ¥${h.capital.toLocaleString('zh-CN')}
           </span>
-          <span style="font-size:13px;color:${h.period_pnl >= 0 ? 'var(--green)' : 'var(--red)'};">
-            盈亏 ¥${h.period_pnl >= 0 ? '+' : ''}${h.period_pnl.toLocaleString('zh-CN', {minimumFractionDigits: 2})}
+          <span style="font-size:13px;color:${(h.display_period_pnl ?? h.period_pnl) >= 0 ? 'var(--green)' : 'var(--red)'};">
+            ${(h.period_pnl_label || '盈亏')} ¥${formatSignedCurrency(h.display_period_pnl ?? h.period_pnl)}
           </span>
         </div>
+        ${holdingRangeText ? `<div style="margin:6px 0 0;font-size:12px;color:var(--text-secondary);">持仓区间：${holdingRangeText}</div>` : ''}
         ${benchmarkHtml ? `<div class="holding-benchmark-row">${benchmarkHtml}</div>` : ''}
         <table class="holding-table">
           <tr>
@@ -2096,6 +2178,121 @@ function renderFactorTable(data) {
 }
 
 // loadFactorBacktest is now called at the end of init() to ensure factorOverview is set first
+
+// ── Sector heat heatmap ──────────────────────────────────────────────────────
+
+let _sectorHeatChart = null;
+
+async function loadSectorHeat() {
+  try {
+    const resp = await fetch('/api/sector_heat?weeks=8');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.error) { console.warn('sector_heat:', data.error); return; }
+    renderSectorHeatChart(data);
+    renderSectorHeatRanking(data.latest_ranking || []);
+  } catch(e) {
+    console.warn('sector_heat 加载失败:', e);
+  }
+}
+
+function renderSectorHeatChart(data) {
+  const container = document.getElementById('sector-heat-chart');
+  if (!container) return;
+  if (!_sectorHeatChart) {
+    _sectorHeatChart = echarts.init(container);
+    window.addEventListener('resize', () => _sectorHeatChart && _sectorHeatChart.resize());
+  }
+
+  const weeks = data.weeks || [];
+  const industries = data.industries || [];
+  const heatData = data.data || [];
+
+  // 对称颜色轴：最大绝对值作为边界
+  const vals = heatData.map(d => d[2]);
+  const maxAbs = Math.max(Math.abs(Math.min(...vals)), Math.abs(Math.max(...vals)), 1);
+
+  _sectorHeatChart.setOption({
+    backgroundColor: '#fff',
+    tooltip: {
+      position: 'top',
+      formatter: p => {
+        const w = weeks[p.data[0]] || '';
+        const ind = industries[p.data[1]] || '';
+        const v = p.data[2];
+        const color = v >= 0 ? '#00b894' : '#d63031';
+        return `<b>${ind}</b><br/>${w}<br/><span style="color:${color};font-weight:700;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+      },
+    },
+    grid: { top: 10, bottom: 60, left: 80, right: 60 },
+    xAxis: {
+      type: 'category',
+      data: weeks,
+      axisLabel: { fontSize: 11, rotate: 30 },
+      splitArea: { show: true },
+    },
+    yAxis: {
+      type: 'category',
+      data: industries,
+      axisLabel: { fontSize: 11 },
+      splitArea: { show: true },
+    },
+    visualMap: {
+      min: -maxAbs,
+      max: maxAbs,
+      calculable: true,
+      orient: 'horizontal',
+      left: 'center',
+      bottom: 0,
+      inRange: {
+        color: ['#d63031', '#fff', '#00b894'],
+      },
+      text: [`+${maxAbs.toFixed(1)}%`, `-${maxAbs.toFixed(1)}%`],
+      textStyle: { fontSize: 11 },
+    },
+    series: [{
+      type: 'heatmap',
+      data: heatData,
+      label: {
+        show: true,
+        fontSize: 10,
+        formatter: p => {
+          const v = p.data[2];
+          return (v >= 0 ? '+' : '') + v.toFixed(1);
+        },
+        color: params => Math.abs(params.data[2]) > maxAbs * 0.6 ? '#fff' : '#333',
+      },
+      emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.3)' } },
+    }],
+  }, true);
+}
+
+function renderSectorHeatRanking(ranking) {
+  const el = document.getElementById('sector-heat-ranking');
+  if (!el || !ranking.length) return;
+
+  const maxAbs = Math.max(...ranking.map(r => Math.abs(r.avg_ret_4w)));
+
+  const rows = ranking.map(r => {
+    const v = r.avg_ret_4w;
+    const color = v >= 0 ? '#00b894' : '#d63031';
+    const barW = Math.round(Math.abs(v) / maxAbs * 60);
+    const barColor = v >= 0 ? '#00b894' : '#d63031';
+    return `<tr>
+      <td class="rank-num">${r.rank}</td>
+      <td style="max-width:70px;overflow:hidden;text-overflow:ellipsis;" title="${r.industry}">${r.industry}</td>
+      <td style="color:${color};font-weight:700;font-size:12px;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</td>
+      <td><span class="heat-rank-bar" style="width:${barW}px;background:${barColor};"></span></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px;padding:0 4px;">近4周均值排名</div>
+    <table class="heat-rank-table">
+      <thead><tr><th>#</th><th>行业</th><th>均周收益</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
 </script>
 
 </body>

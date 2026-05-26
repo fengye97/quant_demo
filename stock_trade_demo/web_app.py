@@ -29,7 +29,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import csv as _csv
 from datetime import datetime as _datetime
-from get_stock_info import supplement_csv as _supplement_csv
+from get_stock_info import (
+    supplement_csv as _supplement_csv,
+    supplement_csv_incremental as _supplement_csv_incremental,
+    fetch_realtime_quotes_batch as _fetch_realtime_quotes_batch,
+)
 
 from strategies.original import OriginalStrategy
 from strategies.original_ensemble import OriginalEnsembleStrategy
@@ -37,13 +41,13 @@ from strategies.chan_enhanced import ChanEnhancedStrategy
 from strategies.chan_only import ChanOnlyStrategy
 from strategies.method_a import MethodAStrategy
 from strategies.quality_value import QualityValueStrategy
+from strategies.sector_heat import SectorHeatStrategy
 from backtest import load_data, select_and_backtest, strategy_evaluate, compute_alpha_beta
-from index_data import INDEX_CONFIGS, TIMING_ETF_CONFIGS, get_index_daily, get_index_returns, build_index_panel, build_us_index_panel, build_period_lookup, get_index_return_for_date, refresh_all_timing_etf_daily
+from index_data import INDEX_CONFIGS, TIMING_ETF_CONFIGS, A_SHARE_INDEX_IDS, get_index_daily, get_timing_etf_daily, get_a_share_trading_calendar, get_index_returns, build_index_panel, build_us_index_panel, build_period_lookup, get_index_return_for_date, refresh_all_timing_etf_daily
 from timing import (
     CSI1000TimingStrategy,
     Star50TimingStrategy,
     ChiNextTimingStrategy,
-    NasdaqTimingStrategy,
     SP500TimingStrategy,
     MacroV32TimingStrategy,
     run_timing_backtest,
@@ -83,6 +87,113 @@ HOLDOUT_START = '2025-12-01'
 # build_timing_strategy / build_us_timing_strategy 优先加载该文件覆盖默认参数
 _BEST_PROFILE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'strategy'))
 _BEST_PROFILE_CACHE = {}  # key: strategy_name -> profile dict (None 表示文件不存在)
+
+# 实时风险因子离线产物：scripts/build_risk_signals.py 生成
+_RISK_SIGNALS_FILE = os.path.join(_BEST_PROFILE_DIR, 'risk_signals.json')
+_RISK_SIGNALS_CACHE = {'mtime': 0, 'data': None}
+
+# Holdout 结构化报告离线产物：scripts/build_holdout_reports.py 生成的 sibling json
+_HOLDOUT_REPORT_CACHE = {}  # strategy_name -> {'data': dict|None, 'mtime': float}
+
+# 实盘交易记录持久化路径（独立于策略缓存；用户手动 / 半自动录入实际下单）
+_LIVE_DATA_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+_LIVE_TRADES_FILE = os.path.join(_LIVE_DATA_DIR, 'live_trades.csv')
+_LIVE_TRADES_LOCK = threading.Lock()
+_LIVE_TRADES_COLUMNS = [
+    'record_id', 'date', 'strategy', 'signal_target', 'actual_position',
+    'exec_price', 'capital', 'notes', 'created_at',
+    # 追加列（向后兼容，缺失视为空字符串）：成交股数；用于按 价格×股数/初始资金 反算 actual_position
+    'shares',
+]
+
+# 每个策略的实盘初始资金（人民币 / 美元统一按数值，前端展示用 ¥/$）。
+# 默认 5w，可在录入表单里覆盖（capital 字段）。
+_LIVE_INITIAL_CAPITAL = 50000.0
+# A 股一手 = 100 股；美股按 1 股粒度。
+_LIVE_LOT_SIZE = {
+    'csi1000_timing': 100, 'star50_timing': 100, 'chinext_timing': 100,
+    'sp500_timing': 1, 'macro_v32_timing': 1,
+}
+_LIVE_CURRENCY = {
+    'csi1000_timing': 'CNY', 'star50_timing': 'CNY', 'chinext_timing': 'CNY',
+    'sp500_timing': 'USD', 'macro_v32_timing': 'USD',
+}
+
+# CLAUDE.md Rule 14: 把「收益+回撤都已跑赢 ETF（任意默认验证窗口）」标记为 production，
+# 其余仍标记为 research。用户在前端看到信号时，能立刻识别哪个是经过验证的、哪个仅供参考。
+# macro_v32: holdout (+3.87% / -11.86%) 显著优于纯技术 nasdaq_timing，已下线后者作为唯一纳指方向策略。
+_STRATEGY_RULE14_STATUS = {
+    'csi1000_timing': 'research',
+    'star50_timing': 'production',
+    'chinext_timing': 'research',
+    'sp500_timing': 'research',
+    'macro_v32_timing': 'production',
+}
+
+_REBALANCE_ACTION_LABELS = {
+    'hold': '继续持有',
+    'enter': '建仓买入',
+    'add': '加仓',
+    'trim': '减仓',
+    'exit': '清仓',
+    'flat': '空仓观望',
+}
+
+# 看多场景下的风险候选：通用部分 + 按策略附加
+_BULLISH_RISKS_GENERAL = [
+    "ETF 跟踪误差与滑点：实盘开盘成交价与策略基准 ETF 收盘价偏离（盘中波动 + 申赎冲击）会带来 0.1~0.3%/月级别的成本，不应被回测净值完全覆盖。",
+    "策略历史样本有限：择时模型在极端 regime（熔断 / 政策急转 / 黑天鹅）下未必有可靠表现，遇到首次出现的环境建议主动降仓避险。",
+]
+_BULLISH_RISKS_BY_STRATEGY = {
+    'csi1000_timing': [
+        "中证1000 是小盘股代表，流动性弱于沪深300，缩量阶段反向时回撤会被放大。",
+        "突破型信号易出现「假突破」：若 T+1 高开低走，建仓首日就可能回吐 1~2%。",
+    ],
+    'star50_timing': [
+        "科创板个股集中度高（前 10 大权重接近一半），单只权重股波动会直接影响整体净值。",
+        "科创板 IPO / 解禁 / 减持节奏对市场情绪冲击显著，需关注公告日临近的回撤风险。",
+    ],
+    'chinext_timing': [
+        "创业板成长股估值对利率和流动性变化敏感，央行行长讲话 / 社融数据日易出现急跌。",
+        "若指数已从底部反弹 ≥15%，继续追涨会面临短期获利盘抛压。",
+    ],
+    'sp500_timing': [
+        "标普500 在牛市末期常出现「最后的拉升」后快速回落，注意 VIX 持续走低后的反转风险。",
+        "美股财报季个股波动放大，板块轮动可能令 ETF 表现与个别龙头股脱钩。",
+    ],
+    'macro_v32_timing': [
+        "宏观多因子模型依赖月频数据（PMI / 失业率 / CPI），对突发事件（地缘 / 银行流动性）反应滞后。",
+        "Fed regime 切换时因子权重重排，策略短期信号可能反复，需容忍 1~2 周方向噪声。",
+    ],
+}
+# 看空场景下的「其他市场机会」候选（与跨策略 target ≥ 0.5 的实时列表合并）
+_BEARISH_OPPS_BY_REGION = {
+    'cn': [
+        "防御资产：10 年期国债 ETF（511260）或黄金 ETF（518880），历史上与小盘成长 ETF 呈负相关。",
+        "现金管理：货币 ETF（511990）/ 银行 T+0 理财可作为等待信号期间的资金停车位。",
+    ],
+    'us': [
+        "防御资产：长债 ETF（TLT）或黄金 ETF（GLD），在风险偏好下行时通常受益。",
+        "现金管理：短端美债 ETF（SGOV / BIL），当前美债短端收益率仍处于历史较高水平。",
+    ],
+}
+_REGION_OF_STRATEGY = {
+    'csi1000_timing': 'cn', 'star50_timing': 'cn', 'chinext_timing': 'cn',
+    'sp500_timing': 'us', 'macro_v32_timing': 'us',
+}
+_STRATEGY_DISPLAY = {
+    'csi1000_timing': '中证1000',
+    'star50_timing': '科创50',
+    'chinext_timing': '创业板',
+    'sp500_timing': '标普500',
+    'macro_v32_timing': '纳指宏观 v3.3',
+}
+_SIGNAL_ACTION_LABELS = {
+    'buy': '买入信号',
+    'sell': '卖出信号',
+    'hold': '维持',
+    'flat': '空仓',
+}
 
 # 磁盘缓存配置：避免每次重启都重新计算回测缓存
 _CACHE_VERSION = 12  # v12: Phase2 walk-forward best_profile 接入；切换 cutoff 或 profile 时递增
@@ -185,6 +296,7 @@ STRATEGY_MAP = {
     'chan_only': ChanOnlyStrategy,
     'method_a': MethodAStrategy,
     'quality_value': QualityValueStrategy,
+    'sector_heat': SectorHeatStrategy,
 }
 
 TIMING_STRATEGY_MAP = {
@@ -195,7 +307,6 @@ TIMING_STRATEGY_MAP = {
 
 US_TIMING_STRATEGY_MAP = {
     'macro_v32_timing': MacroV32TimingStrategy,
-    'nasdaq_timing': NasdaqTimingStrategy,
     'sp500_timing': SP500TimingStrategy,
 }
 
@@ -494,7 +605,7 @@ _UPDATE_DATA_STATUS = {
 }
 
 # 指数数据更新状态追踪
-_INDEX_UPDATE_STATUS = {'stage': 'idle', 'message': '', 'progress': 0}
+_INDEX_UPDATE_STATUS = {'stage': 'idle', 'message': '', 'progress': 0, 'warning': None, 'details': None}
 
 
 def ensure_index_returns_loaded():
@@ -614,8 +725,8 @@ def ensure_us_timing_panel_loaded():
         raise
 
 
-def build_us_timing_strategy(strategy_name='nasdaq_timing', **params):
-    strat_cls = US_TIMING_STRATEGY_MAP.get(strategy_name, NasdaqTimingStrategy)
+def build_us_timing_strategy(strategy_name='macro_v32_timing', **params):
+    strat_cls = US_TIMING_STRATEGY_MAP.get(strategy_name, MacroV32TimingStrategy)
     sig = inspect.signature(strat_cls.__init__)
     init_keys = set(sig.parameters.keys())
     merged_params = dict(_US_TIMING_CACHE_DEFAULTS.get(strategy_name, {}))
@@ -736,6 +847,49 @@ def _load_best_profile(strategy_name):
     except Exception as exc:
         print(f"[WARN] 读取 {fp} 失败: {exc}")
         _BEST_PROFILE_CACHE[strategy_name] = None
+        return None
+
+
+def _load_holdout_report(strategy_name):
+    """读取 strategy/holdout_report_{name}.json（build_holdout_reports.py 产出）。
+    mtime 失效；缺失返回 None。前端「策略验证概览」面板用此数据。"""
+    fp = os.path.join(_BEST_PROFILE_DIR, f'holdout_report_{strategy_name}.json')
+    if not os.path.exists(fp):
+        _HOLDOUT_REPORT_CACHE[strategy_name] = {'data': None, 'mtime': 0}
+        return None
+    mtime = os.path.getmtime(fp)
+    cache = _HOLDOUT_REPORT_CACHE.get(strategy_name)
+    if cache and cache.get('mtime') == mtime and cache.get('data') is not None:
+        return cache['data']
+    try:
+        with open(fp, encoding='utf-8') as f:
+            data = json.load(f)
+        _HOLDOUT_REPORT_CACHE[strategy_name] = {'data': data, 'mtime': mtime}
+        return data
+    except Exception as exc:
+        print(f"[WARN] 读取 {fp} 失败: {exc}")
+        _HOLDOUT_REPORT_CACHE[strategy_name] = {'data': None, 'mtime': 0}
+        return None
+
+
+def _load_risk_signals():
+    """读取 strategy/risk_signals.json。按 mtime 失效；缺失返回 None。"""
+    if not os.path.exists(_RISK_SIGNALS_FILE):
+        _RISK_SIGNALS_CACHE['data'] = None
+        _RISK_SIGNALS_CACHE['mtime'] = 0
+        return None
+    mtime = os.path.getmtime(_RISK_SIGNALS_FILE)
+    if mtime == _RISK_SIGNALS_CACHE['mtime'] and _RISK_SIGNALS_CACHE['data'] is not None:
+        return _RISK_SIGNALS_CACHE['data']
+    try:
+        with open(_RISK_SIGNALS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        _RISK_SIGNALS_CACHE['data'] = data
+        _RISK_SIGNALS_CACHE['mtime'] = mtime
+        return data
+    except Exception as exc:
+        print(f"[WARN] 读取 {_RISK_SIGNALS_FILE} 失败: {exc}")
+        _RISK_SIGNALS_CACHE['data'] = None
         return None
 
 
@@ -962,7 +1116,81 @@ def _resample_curve(curve, resolution):
     return result
 
 
-def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0):
+def _load_trading_calendar(benchmark_id=None):
+    try:
+        calendar_df = get_a_share_trading_calendar()
+        if calendar_df is not None and len(calendar_df) > 0 and 'date' in calendar_df.columns:
+            dates = pd.to_datetime(calendar_df['date'], errors='coerce').dropna().sort_values().unique()
+            if len(dates) > 0:
+                return pd.DatetimeIndex(dates)
+    except Exception:
+        pass
+
+    normalized_id = _normalize_benchmark_id(benchmark_id)
+    candidate_ids = []
+    if normalized_id in A_SHARE_INDEX_IDS:
+        candidate_ids.append(normalized_id)
+    if DEFAULT_BENCHMARK_ID not in candidate_ids:
+        candidate_ids.append(DEFAULT_BENCHMARK_ID)
+    for index_id in A_SHARE_INDEX_IDS:
+        if index_id not in candidate_ids:
+            candidate_ids.append(index_id)
+
+    best_dates = pd.DatetimeIndex([])
+    for index_id in candidate_ids:
+        try:
+            df = get_index_daily(index_id)
+        except Exception:
+            continue
+        if df is None or len(df) == 0 or 'date' not in df.columns:
+            continue
+        dates = pd.to_datetime(df['date'], errors='coerce').dropna().sort_values().unique()
+        if len(dates) > len(best_dates):
+            best_dates = pd.DatetimeIndex(dates)
+        elif len(dates) == len(best_dates) and len(dates) > 0 and pd.to_datetime(dates[-1]) > pd.to_datetime(best_dates[-1]):
+            best_dates = pd.DatetimeIndex(dates)
+    return best_dates
+
+
+
+def _resolve_period_trading_dates(trade_date, period_curve, trading_calendar):
+    trade_ts = pd.to_datetime(trade_date)
+    period_len = len(period_curve or [])
+    if period_len <= 0:
+        return []
+    if trading_calendar is None or len(trading_calendar) == 0:
+        return []
+
+    future_dates = trading_calendar[trading_calendar > trade_ts]
+    if len(future_dates) == 0:
+        return []
+    return [pd.to_datetime(d) for d in future_dates[:period_len]]
+
+
+
+def _build_holding_date_range(trade_date, period_curve, trading_calendar):
+    trade_label = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
+    trading_dates = _resolve_period_trading_dates(trade_date, period_curve, trading_calendar)
+    if trading_dates:
+        start_label = trading_dates[0].strftime('%Y-%m-%d')
+        end_label = trading_dates[-1].strftime('%Y-%m-%d')
+    else:
+        start_label = trade_label
+        end_label = trade_label
+    return {
+        'holding_start_date': start_label,
+        'holding_end_date': end_label,
+        'holding_date_range_label': f'{start_label} → {end_label}',
+    }
+
+
+
+def _is_open_snapshot_period(raw_stocks):
+    return bool(raw_stocks) and all(stock.get('sell_price') is None for stock in raw_stocks)
+
+
+
+def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0, trading_calendar=None):
     """按结果区间切分并重置日线净值基准。"""
     if not full_daily_curve or len(result_df) == 0:
         return []
@@ -973,6 +1201,7 @@ def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0):
         running_value = float(base_value)
         for period_idx, period_curve in enumerate(period_curves):
             trade_date = pd.to_datetime(result_df.iloc[period_idx]['交易日期'])
+            trading_dates = _resolve_period_trading_dates(trade_date, period_curve, trading_calendar)
             if not period_curve:
                 daily_curve.append({
                     'date': trade_date.strftime('%Y-%m-%d'),
@@ -984,8 +1213,9 @@ def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0):
             for day_idx, period_value in enumerate(period_curve, start=1):
                 day_ret = 0.0 if prev == 0 else float(period_value / prev - 1)
                 running_value *= (1 + day_ret)
+                curve_date = trading_dates[day_idx - 1].strftime('%Y-%m-%d') if day_idx - 1 < len(trading_dates) else (trade_date + pd.Timedelta(days=day_idx)).strftime('%Y-%m-%d')
                 daily_curve.append({
-                    'date': (trade_date + pd.Timedelta(days=day_idx)).strftime('%Y-%m-%d'),
+                    'date': curve_date,
                     'value': round(running_value, 6),
                     'return': round(day_ret, 6),
                 })
@@ -1003,10 +1233,59 @@ def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0):
     } for p in full_daily_curve]
 
 
-def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count):
-    ret = raw_stock.get('return', 0)
-    buy_price = raw_stock.get('buy_price', 0)
-    sell_price = raw_stock.get('sell_price', None)
+def _safe_float_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+
+def _normalize_stock_code(code):
+    text = str(code or '').strip().lower()
+    if not text:
+        return ''
+    if text.startswith(('sh', 'sz', 'bj')):
+        return text[2:]
+    return text
+
+
+
+def _extract_open_stock_codes(result):
+    if result is None or len(result) == 0 or '买入个股收益' not in result.columns:
+        return []
+    codes = set()
+    for raw in result['买入个股收益']:
+        try:
+            stocks = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for stock in stocks or []:
+            code = str(stock.get('code', '')).strip()
+            if code and stock.get('sell_price') is None:
+                codes.add(code)
+    return sorted(codes)
+
+
+
+def _fetch_open_stock_quotes(result):
+    codes = _extract_open_stock_codes(result)
+    if not codes:
+        return {}
+    try:
+        return _fetch_realtime_quotes_batch(codes)
+    except Exception:
+        return {}
+
+
+
+def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count, quote_map=None, allow_open_position=False):
+    quote_map = quote_map or {}
+    ret = float(raw_stock.get('return', 0) or 0)
+    buy_price = _safe_float_or_none(raw_stock.get('buy_price')) or 0.0
+    sell_price = _safe_float_or_none(raw_stock.get('sell_price'))
     code = raw_stock.get('code', '')
     if buy_price > 0:
         shares = int(cap_per_stock / buy_price / 100) * 100
@@ -1014,19 +1293,50 @@ def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count):
     else:
         shares = 0
         actual_invested = cap_per_stock
-    pnl = round(float(actual_invested * ret), 2) if actual_invested > 0 else round(float(cap_per_stock * ret), 2)
-    latest_price = sell_price if sell_price is not None else buy_price
+
+    normalized_code = _normalize_stock_code(code)
+    quote = quote_map.get(code) or quote_map.get(normalized_code) or {}
+    realtime_price = _safe_float_or_none(quote.get('latest'))
+    is_open = bool(allow_open_position and sell_price is None)
+    if is_open and realtime_price is not None:
+        latest_price = realtime_price
+        price_source = 'realtime'
+    elif sell_price is not None:
+        latest_price = sell_price
+        price_source = 'exit'
+    elif is_open and buy_price > 0:
+        latest_price = buy_price
+        price_source = 'buy_fallback'
+    else:
+        latest_price = None
+        price_source = None
+
     position_market_value = round(float(shares * latest_price), 2) if shares > 0 and latest_price is not None else None
     position_weight = round(position_market_value / period_capital, 6) if position_market_value is not None and period_capital > 0 else raw_stock.get('weight', round(1.0 / stock_count, 4))
+
+    if actual_invested > 0:
+        backtest_pnl = round(float(actual_invested * ret), 2)
+    else:
+        backtest_pnl = round(float(cap_per_stock * ret), 2)
+
+    display_pnl = backtest_pnl
+    if is_open and position_market_value is not None and actual_invested > 0:
+        display_pnl = round(float(position_market_value - actual_invested), 2)
+
     return {
         'code': code,
         'name': raw_stock.get('name', ''),
         'weight': raw_stock.get('weight', round(1.0 / stock_count, 4)),
         'position_weight': position_weight,
         'return': ret,
-        'pnl': pnl,
+        'pnl': backtest_pnl,
+        'display_pnl': display_pnl,
         'buy_price': buy_price,
         'sell_price': sell_price,
+        'exit_price': sell_price,
+        'latest_price': round(float(latest_price), 2) if latest_price is not None else None,
+        'is_open': is_open,
+        'price_source': price_source,
         'shares': shares,
         'position_market_value': position_market_value,
         'factor_score': raw_stock.get('factor_score'),
@@ -1041,6 +1351,88 @@ def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count):
         'selection_fundamentals': raw_stock.get('selection_fundamentals', []),
         'selection_factor_breakdown': raw_stock.get('selection_factor_breakdown', []),
     }
+
+
+
+def _build_holdings_payload(df, default_capital, quote_map=None, trading_calendar=None):
+    holdings = []
+    if df is None or len(df) == 0:
+        return holdings
+    quote_map = quote_map or {}
+    period_curves = df.attrs.get('period_daily_curves', [])
+    last_open_snapshot_idx = None
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        raw_stocks = []
+        if '买入个股收益' in df.columns:
+            try:
+                raw_stocks = json.loads(row['买入个股收益'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if _is_open_snapshot_period(raw_stocks):
+            last_open_snapshot_idx = row_idx
+
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        raw_stocks = []
+        if '买入个股收益' in df.columns:
+            try:
+                raw_stocks = json.loads(row['买入个股收益'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        is_open_snapshot = _is_open_snapshot_period(raw_stocks)
+        if is_open_snapshot and row_idx != last_open_snapshot_idx:
+            continue
+        allow_open_position = is_open_snapshot and row_idx == last_open_snapshot_idx
+        period_capital = float(row.get('当期本金', default_capital))
+        n = len(raw_stocks) if raw_stocks else 1
+        stocks = []
+        for s in raw_stocks:
+            target_weight = float(s.get('weight', round(1.0 / n, 4))) if n > 0 else 0
+            cap_per_stock = period_capital * target_weight
+            stocks.append(_build_stock_payload(s, cap_per_stock, period_capital, n, quote_map=quote_map, allow_open_position=allow_open_position))
+        if not stocks:
+            codes = str(row.get('买入股票代码', '')).strip().split()
+            names = str(row.get('买入股票名称', '')).strip().split()
+            stocks = [{
+                'code': c,
+                'name': names[i] if i < len(names) else '',
+                'weight': round(1.0 / len(codes), 4) if codes else 0,
+                'position_weight': round(1.0 / len(codes), 4) if codes else 0,
+                'return': 0,
+                'pnl': 0,
+                'display_pnl': 0,
+                'buy_price': 0,
+                'sell_price': None,
+                'exit_price': None,
+                'latest_price': None,
+                'is_open': False,
+                'price_source': None,
+                'shares': 0,
+                'position_market_value': None,
+                'factor_score': None,
+                'rank': None,
+                'industry_l2': '',
+                'pe': None,
+                'pb': None,
+                'market_cap': None,
+            } for i, c in enumerate(codes)]
+        has_open_position = any(bool(s.get('is_open')) for s in stocks)
+        display_period_pnl = round(sum(float(s.get('display_pnl', 0) or 0) for s in stocks), 2) if stocks else round(float(row.get('当期盈亏', 0)), 2)
+        period_curve = period_curves[row_idx] if row_idx < len(period_curves) else []
+        holding_range = _build_holding_date_range(row['交易日期'], period_curve, trading_calendar)
+        holdings.append({
+            'date': row['交易日期'].strftime('%Y-%m-%d'),
+            'period_return': round(float(row['选股下周期涨跌幅']), 6),
+            'period_pnl': round(float(row.get('当期盈亏', 0)), 2),
+            'display_period_pnl': display_period_pnl,
+            'period_pnl_label': '当前浮盈亏' if has_open_position else '持仓盈亏',
+            'capital': round(period_capital, 2),
+            'stocks': stocks,
+            'stock_count': len(stocks),
+            'benchmark_returns': _build_period_benchmark_returns(row['交易日期'], INDEX_RETURNS_MAP),
+            **holding_range,
+        })
+    holdings.reverse()
+    return holdings
 
 
 def _compute_single_benchmark_curve(result, index_returns):
@@ -1088,16 +1480,34 @@ def _build_period_benchmark_returns(trade_date, index_returns_map=None):
     return benchmark_returns
 
 
+def _build_etf_monthly_returns(result_df):
+    if result_df is None or len(result_df) == 0 or 'etf_close' not in result_df.columns:
+        return None
+    etf = result_df[['交易日期', 'etf_close']].copy()
+    etf['交易日期'] = pd.to_datetime(etf['交易日期'])
+    etf['etf_close'] = pd.to_numeric(etf['etf_close'], errors='coerce')
+    etf = etf.dropna(subset=['交易日期', 'etf_close'])
+    etf = etf[etf['etf_close'] > 0].drop_duplicates(subset=['交易日期']).sort_values('交易日期')
+    if len(etf) < 2:
+        return None
+    daily_returns = etf.set_index('交易日期')['etf_close'].pct_change().dropna()
+    if len(daily_returns) == 0:
+        return None
+    monthly_returns = daily_returns.resample('M').apply(lambda x: (1 + x).prod() - 1).dropna()
+    return monthly_returns if len(monthly_returns) else None
+
+
 def _month_start_from_end(end_date, months):
     end_ts = pd.to_datetime(end_date)
     start_ts = (end_ts - pd.DateOffset(months=months)) + pd.Timedelta(days=1)
     return start_ts.normalize()
 
 
-def build_selection_interval_windows(result, index_returns=None, benchmark_id=None):
+def build_selection_interval_windows(result, index_returns=None, benchmark_id=None, quote_map=None):
     if len(result) == 0:
         return {}
 
+    trading_calendar = _load_trading_calendar(benchmark_id)
     full_result = result.copy().reset_index(drop=True)
     full_start = pd.to_datetime(full_result['交易日期'].min())
     full_end = pd.to_datetime(full_result['交易日期'].max())
@@ -1170,29 +1580,12 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
 
         holdings = []
         if reset_capital:
-            for _, row in df.iterrows():
-                raw_stocks = []
-                if '买入个股收益' in df.columns:
-                    try:
-                        raw_stocks = json.loads(row['买入个股收益'])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                period_capital = float(row.get('当期本金', initial_capital))
-                n = len(raw_stocks) if raw_stocks else 1
-                stocks = []
-                for s in raw_stocks:
-                    target_weight = float(s.get('weight', round(1.0 / n, 4))) if n > 0 else 0
-                    cap_per_stock = period_capital * target_weight
-                    stocks.append(_build_stock_payload(s, cap_per_stock, period_capital, n))
-                holdings.append({
-                    'date': row['交易日期'].strftime('%Y-%m-%d'),
-                    'period_return': round(float(row['选股下周期涨跌幅']), 6),
-                    'period_pnl': round(float(row.get('当期盈亏', 0)), 2),
-                    'capital': round(period_capital, 2),
-                    'stocks': stocks,
-                    'stock_count': len(stocks),
-                    'benchmark_returns': _build_period_benchmark_returns(row['交易日期'], INDEX_RETURNS_MAP),
-                })
+            holdings = _build_holdings_payload(
+                df,
+                initial_capital,
+                quote_map=quote_map or _fetch_open_stock_quotes(df),
+                trading_calendar=trading_calendar,
+            )
 
         bm_curves_raw = _compute_benchmark_curves(df, INDEX_RETURNS_MAP)
         df_final_val = float(df['累积净值'].iloc[-1]) if len(df) > 0 else 1.0
@@ -1267,7 +1660,7 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
                 }
                 for _, r in df.iterrows()
             ], 'year'),
-            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', [])),
+            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar),
             'holdings': holdings,
             'benchmark_curves': benchmark_curves,
         }
@@ -1275,7 +1668,7 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
     return summary
 
 
-def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, benchmark_id=None):
+def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, benchmark_id=None, quote_map=None):
     """
     将回测结果拆分为训练集和测试集，分别计算指标。
 
@@ -1293,6 +1686,7 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
     if split_date is None or pd.isna(split_date):
         return {'train': None, 'test': None, 'split_date': None}
 
+    trading_calendar = _load_trading_calendar(benchmark_id)
     train = result[result['交易日期'] <= split_date].copy()
     test = result[result['交易日期'] > split_date].copy()
 
@@ -1360,7 +1754,7 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
             'win_rate': win_rate,
             'months': len(df),
             'monthly_returns': monthly,
-            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', [])),
+            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar),
             'initial_capital': start_capital,
             'final_capital': final_capital,
             'date_range': {
@@ -1370,42 +1764,12 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
         }
         # 持股明细
         if include_holdings:
-            holdings = []
-            for _, row in df.iterrows():
-                raw_stocks = []
-                if '买入个股收益' in df.columns:
-                    try:
-                        raw_stocks = json.loads(row['买入个股收益'])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                period_capital = float(row.get('当期本金', start_capital))
-                n = len(raw_stocks) if raw_stocks else 1
-                stocks = []
-                for s in raw_stocks:
-                    target_weight = float(s.get('weight', round(1.0 / n, 4))) if n > 0 else 0
-                    cap_per_stock = period_capital * target_weight
-                    stocks.append(_build_stock_payload(s, cap_per_stock, period_capital, n))
-                if not stocks:
-                    codes = str(row.get('买入股票代码', '')).strip().split()
-                    names = str(row.get('买入股票名称', '')).strip().split()
-                    stocks = [{'code': c, 'name': names[i] if i < len(names) else '',
-                               'weight': round(1.0/len(codes), 4) if codes else 0,
-                               'position_weight': round(1.0/len(codes), 4) if codes else 0,
-                               'return': 0, 'pnl': 0, 'buy_price': 0,
-                               'sell_price': None, 'shares': 0, 'position_market_value': None,
-                               'factor_score': None, 'rank': None,
-                               'industry_l2': '', 'pe': None, 'pb': None, 'market_cap': None}
-                              for i, c in enumerate(codes)]
-                holdings.append({
-                    'date': row['交易日期'].strftime('%Y-%m-%d'),
-                    'period_return': round(float(row['选股下周期涨跌幅']), 6),
-                    'period_pnl': round(float(row.get('当期盈亏', 0)), 2),
-                    'capital': round(period_capital, 2),
-                    'stocks': stocks,
-                    'stock_count': len(stocks),
-                    'benchmark_returns': _build_period_benchmark_returns(row['交易日期'], INDEX_RETURNS_MAP),
-                })
-            period_result['holdings'] = holdings
+            period_result['holdings'] = _build_holdings_payload(
+                df,
+                start_capital,
+                quote_map=quote_map or _fetch_open_stock_quotes(df),
+                trading_calendar=trading_calendar,
+            )
 
         # ── 归因指标 ──
         if index_returns is not None:
@@ -1494,36 +1858,21 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None):
     monthly = [{'date': r['交易日期'].strftime('%Y-%m-%d'),
                 'value': round(float(r['选股下周期涨跌幅']), 6)}
                for _, r in result.iterrows()]
-    daily_equity_curve = _build_daily_curve_slice(result, result.attrs.get('daily_equity_curve', []))
+    trading_calendar = _load_trading_calendar(benchmark_id)
+    daily_equity_curve = _build_daily_curve_slice(result, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar)
 
     # 预计算各分辨率曲线（月线为原始数据，季线/年线由后端重采样）
     equity_curve_quarterly = _resample_curve(equity_curve, 'quarter')
     equity_curve_yearly = _resample_curve(equity_curve, 'year')
 
     # 持仓明细（含个股仓位占比和盈亏）
-    holdings = []
-    if '买入个股收益' in result.columns:
-        for _, r in result.iterrows():
-            try:
-                raw_stocks = json.loads(r['买入个股收益'])
-            except (json.JSONDecodeError, TypeError):
-                raw_stocks = []
-            capital = float(r.get('当期本金', 100000))
-            n = len(raw_stocks) if raw_stocks else 1
-            stocks = []
-            for s in raw_stocks:
-                target_weight = float(s.get('weight', round(1.0 / n, 4))) if n > 0 else 0
-                cap_per_stock = capital * target_weight
-                stocks.append(_build_stock_payload(s, cap_per_stock, capital, n))
-            holdings.append({
-                'date': r['交易日期'].strftime('%Y-%m-%d'),
-                'period_return': round(float(r['选股下周期涨跌幅']), 6),
-                'period_pnl': round(float(r.get('当期盈亏', 0)), 2),
-                'capital': round(capital, 2),
-                'stocks': stocks,
-                'stock_count': len(stocks),
-                'benchmark_returns': _build_period_benchmark_returns(r['交易日期'], INDEX_RETURNS_MAP),
-            })
+    holdings_quote_map = _fetch_open_stock_quotes(result)
+    holdings = _build_holdings_payload(
+        result,
+        float(result.attrs.get('initial_capital', 100000)),
+        quote_map=holdings_quote_map,
+        trading_calendar=trading_calendar,
+    ) if '买入个股收益' in result.columns else []
 
     def g(m):
         if m not in ev.index:
@@ -1546,12 +1895,14 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None):
         result,
         index_returns=active_benchmark_series,
         benchmark_id=active_benchmark_id,
+        quote_map=holdings_quote_map,
     )
 
     # 兼容旧结构的临时拆分摘要
     split = compute_split_metrics(result, split_date,
                                   index_returns=active_benchmark_series,
-                                  benchmark_id=active_benchmark_id)
+                                  benchmark_id=active_benchmark_id,
+                                  quote_map=holdings_quote_map)
 
     # 分别构建训练集和测试集的资金曲线（各自从 1 开始）
     train_curve = []
@@ -1629,6 +1980,21 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None):
             'excess_return_pct': excess_pct,
         })
 
+    start_label = result['交易日期'].min().strftime('%Y-%m-%d') if len(result) > 0 else None
+    end_label = result['交易日期'].max().strftime('%Y-%m-%d') if len(result) > 0 else None
+    if len(result) <= 1:
+        holdings_label = '近一月持股明细 & 仓位'
+    else:
+        holdings_label = '当前区间持股明细 & 仓位'
+    holdings_context = {
+        'label': holdings_label,
+        'date_range': {
+            'start': start_label,
+            'end': end_label,
+        },
+        'holdings': holdings,
+    } if len(result) > 0 else None
+
     return {
         'equity_curve': equity_curve,
         'equity_curve_quarterly': equity_curve_quarterly,
@@ -1649,6 +2015,7 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None):
         'yearly_returns': yearly_returns,
         'monthly_returns': monthly,
         'holdings': holdings,
+        'holdings_context': holdings_context,
         'metrics': {
             'cumulative_return': g('累积净值'),
             'annual_return': g('年化收益'),
@@ -1711,8 +2078,36 @@ def us_timing_page():
     return render_template('us_timing.html')
 
 
+@app.route('/api/us_timing/info')
+def api_us_timing_info():
+    try:
+        ensure_us_timing_panel_loaded()
+    except Exception as e:
+        return jsonify({'error': f'美股指数数据加载失败: {e}'}), 500
+    if US_TIMING_PANEL is None or len(US_TIMING_PANEL) == 0:
+        return jsonify({'error': '美股指数数据未加载'}), 500
+    max_date = pd.to_datetime(US_TIMING_PANEL['交易日期'].max())
+    min_date = pd.to_datetime(US_TIMING_PANEL['交易日期'].min())
+    return jsonify({
+        'data_min_date': min_date.strftime('%Y-%m-%d'),
+        'data_max_date': max_date.strftime('%Y-%m-%d'),
+        'indexes': [
+            {'id': strategy_id, 'name': strategy_cls().get_display_name(), 'index_name': strategy_cls().get_index_name()}
+            for strategy_id, strategy_cls in US_TIMING_STRATEGY_MAP.items()
+        ],
+    })
+
+
 @app.route('/api/us_timing/strategy_list')
 def api_us_timing_strategy_list():
+    try:
+        ensure_us_timing_panel_loaded()
+    except Exception as e:
+        return jsonify({'error': f'美股指数数据加载失败: {e}'}), 500
+    data_max_date = None
+    if US_TIMING_PANEL is not None and len(US_TIMING_PANEL) > 0:
+        data_max_date = pd.to_datetime(US_TIMING_PANEL['交易日期'].max()).strftime('%Y-%m-%d')
+
     def _build_perf_delta(current_id, baseline_id=None):
         if not baseline_id:
             return None
@@ -1782,6 +2177,7 @@ def api_us_timing_strategy_list():
             'total_return_pct': total_return_pct,
             'annual_return': annual_return,
             'max_drawdown': max_drawdown,
+            'data_max_date': data_max_date,
             'is_page_winner': True,
             **changelog_meta,
             'performance_delta': perf_delta,
@@ -1791,7 +2187,7 @@ def api_us_timing_strategy_list():
 
 @app.route('/api/us_timing/params')
 def api_us_timing_params():
-    strategy_name = request.args.get('strategy', 'nasdaq_timing')
+    strategy_name = request.args.get('strategy', 'macro_v32_timing')
     strategy = build_us_timing_strategy(strategy_name)
     payload = strategy.get_signal_metadata()
     profile_view = get_best_profile_view(strategy_name)
@@ -1802,7 +2198,7 @@ def api_us_timing_params():
 
 @app.route('/api/us_timing/backtest')
 def api_us_timing_backtest():
-    strategy_name = request.args.get('strategy', 'nasdaq_timing')
+    strategy_name = request.args.get('strategy', 'macro_v32_timing')
     start_date = request.args.get('start')
     end_date = request.args.get('end')
     compact = request.args.get('compact', '0') in {'1', 'true', 'yes'}
@@ -1836,7 +2232,8 @@ def api_us_timing_backtest():
         params = {}
         int_keys = {'fast_window', 'slow_window', 'momentum_window'}
         float_keys = {'enter_threshold', 'add_threshold', 'trim_threshold', 'exit_threshold', 'max_entry_exposure',
-                      'probe_entry_exposure', 'sigmoid_k', 'max_leverage', 'base_position', 'inertia', 'crisis_vix'}
+                      'probe_entry_exposure', 'sigmoid_k', 'max_leverage', 'base_position', 'inertia', 'crisis_vix',
+                      'fed_block_weight', 'restrictive_threshold', 'pivot_relief', 'base_floor'}
         for key in int_keys | float_keys:
             val = request.args.get(key, type=float)
             if val is not None:
@@ -1868,10 +2265,15 @@ def api_us_timing_backtest():
         if len(result) == 0:
             return jsonify({'error': '所选日期范围内无数据'}), 400
 
-        metrics = evaluate_timing_result(result, reset_capital=True)
+        etf_benchmark_returns = _build_etf_monthly_returns(result)
+        metrics = evaluate_timing_result(result, benchmark_returns=etf_benchmark_returns, reset_capital=True)
         bm_curve = []
         payload = timing_result_to_json(result, metrics, benchmark_curve=bm_curve, compact=compact)
-        payload['interval_windows'] = summarize_timing_windows(result, full_history_start=full_history_start)
+        payload['interval_windows'] = summarize_timing_windows(
+            result,
+            benchmark_returns=etf_benchmark_returns,
+            full_history_start=full_history_start,
+        )
         print(f'[us_timing/backtest] strategy={strategy_name} cache_hit={use_cache} total={(time.time()-_t0)*1000:.0f}ms')
         return jsonify(payload)
     except Exception as e:
@@ -1931,6 +2333,10 @@ _SHARED_REALISM_DEFAULTS = {
     'stamp_tax_rate': 0.0,
     'transfer_fee_rate': 0.00001,
     'limit_max_delay_days': 5,
+    # CLAUDE.md Rule 14: 择时策略支持最低底仓 base_floor，避免长牛中过度避险。
+    # 共享默认为 0（无地板）；只有通过 walk-forward 达成「收益+回撤都跑赢 ETF」
+    # 的策略，才在自己的 best_profile.json 中显式启用 base_floor（如 star50=0.7）。
+    'base_floor': 0.0,
 }
 
 _TIMING_CACHE_DEFAULTS = {
@@ -1959,18 +2365,12 @@ _TIMING_CACHE_DEFAULTS = {
 
 _US_TIMING_CACHE_DEFAULTS = {
     'macro_v32_timing': {
-        'sigmoid_k': 1.5, 'max_leverage': 1.4, 'base_position': 0.5,
-        'inertia': 0.03, 'crisis_vix': 35.0,
+        'sigmoid_k': 1.2, 'max_leverage': 1.4, 'base_position': 0.45,
+        'inertia': 0.05, 'crisis_vix': 40.0,
+        'fed_block_weight': 0.25, 'restrictive_threshold': 0.40, 'pivot_relief': 0.60,
         'exposure_mode': 'staged', 'enter_threshold': 0.55, 'add_threshold': 0.75,
         'trim_threshold': 0.35, 'exit_threshold': 0.15, 'confirm_days': 1,
         'max_entry_exposure': 1.0,
-        **_SHARED_REALISM_DEFAULTS,
-    },
-    'nasdaq_timing': {
-        'fast_window': 20, 'slow_window': 120, 'momentum_window': 120,
-        'exposure_mode': 'staged', 'enter_threshold': 0.55, 'add_threshold': 0.75,
-        'trim_threshold': 0.35, 'exit_threshold': 0.15, 'confirm_days': 2,
-        'max_entry_exposure': 0.5, 'probe_entry_exposure': 0.25, 'probe_confirm_days': 1,
         **_SHARED_REALISM_DEFAULTS,
     },
     'sp500_timing': {
@@ -1994,6 +2394,7 @@ _REALISM_FLOAT_KEYS = {
     'slippage_bps', 'cash_interest_rate',
     'commission_rate', 'commission_min',
     'stamp_tax_rate', 'transfer_fee_rate',
+    'base_floor',
 }
 _REALISM_ALL_KEYS = _REALISM_BOOL_KEYS | _REALISM_INT_KEYS | _REALISM_FLOAT_KEYS
 
@@ -2220,6 +2621,540 @@ def api_timing_params():
     return jsonify(payload)
 
 
+def _latest_live_position(strategy_id):
+    """读 live_trades.csv，返回该策略最近一条记录的 actual_position；没有记录则返回 0.0。
+
+    用于在「最新入市信号卡」上把「操作建议」从策略视角（昨仓 vs 今仓）改成实盘视角（实盘当前仓 vs 今仓目标）。
+    例如：策略前后两日都是 hold@100%，但实盘仓位还是 0% → 建议应当是「建仓买入」而非「继续持有」。
+    """
+    try:
+        with _LIVE_TRADES_LOCK:
+            rows = _read_live_trades()
+    except Exception:
+        return 0.0
+    rows = [r for r in rows if r.get('strategy') == strategy_id and r.get('date')]
+    if not rows:
+        return 0.0
+    rows.sort(key=lambda r: r['date'])
+    try:
+        return float(rows[-1].get('actual_position') or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _derive_action_from_delta(live_pos, target, tol=0.005):
+    """基于「实盘当前仓位 vs 目标仓位」推导 rebalance_action。"""
+    delta = target - live_pos
+    if abs(delta) < tol:
+        return 'flat' if target <= tol else 'hold'
+    if delta > 0:
+        return 'enter' if live_pos <= tol else 'add'
+    return 'exit' if target <= tol else 'trim'
+
+
+def _format_money(v, currency):
+    sym = '$' if currency == 'USD' else '¥'
+    return f'{sym}{v:,.2f}'
+
+
+def _build_action_rationale(action, live_pos, target, ref_open, ref_close, strategy_id):
+    """按 action 类型生成详细的「为什么是这个动作 + 怎么执行」说明文本。"""
+    capital = _LIVE_INITIAL_CAPITAL
+    currency = _LIVE_CURRENCY.get(strategy_id, 'CNY')
+    lot = _LIVE_LOT_SIZE.get(strategy_id, 1)
+    price = ref_open or ref_close  # 优先用 T+1 开盘价（执行价）；缺失时用收盘
+    delta = target - live_pos
+    cap_str = _format_money(capital, currency)
+
+    def _shares_for(pos):
+        if not price or price <= 0:
+            return None
+        return int((capital * pos) / price / lot) * lot
+
+    target_shares = _shares_for(target)
+    live_shares = _shares_for(live_pos)
+    delta_shares = (target_shares - live_shares) if (target_shares is not None and live_shares is not None) else None
+    px_txt = f'{price:.3f}' if price else '—'
+
+    if action == 'enter':
+        return (
+            f'首次建仓。策略目标 {target*100:.1f}%，实盘当前 0%（{cap_str} 全部空仓）。'
+            f'建议 T+1 开盘按参考价 {px_txt} 一次性买入约 {target_shares or "—"} 股，'
+            f'完成后实盘仓位 ≈ {target*100:.1f}%。每手 {lot} 股已按整手取整。'
+        )
+    if action == 'add':
+        return (
+            f'加仓补齐。实盘当前 {live_pos*100:.1f}%（约 {live_shares or "—"} 股），策略目标 {target*100:.1f}%，'
+            f'差 +{delta*100:.1f}%。建议 T+1 开盘按 {px_txt} 补买约 {delta_shares if delta_shares is not None else "—"} 股。'
+        )
+    if action == 'trim':
+        return (
+            f'减仓回落。实盘当前 {live_pos*100:.1f}%（约 {live_shares or "—"} 股），策略目标降到 {target*100:.1f}%，'
+            f'差 {delta*100:.1f}%。建议 T+1 开盘按 {px_txt} 卖出约 {abs(delta_shares) if delta_shares is not None else "—"} 股。'
+        )
+    if action == 'exit':
+        return (
+            f'清仓离场。策略已切换为空仓信号（目标 0%），实盘当前 {live_pos*100:.1f}%。'
+            f'建议 T+1 开盘按 {px_txt} 全部卖出，共约 {live_shares or "—"} 股，资金回到现金。'
+        )
+    if action == 'hold':
+        return (
+            f'与目标一致。实盘 {live_pos*100:.1f}% 与策略目标 {target*100:.1f}% 基本对齐（差 {abs(delta)*100:.2f}%），'
+            f'无需操作。等待下一次信号变化（每日收盘后由 T+1 信号决定）。'
+        )
+    if action == 'flat':
+        return (
+            f'空仓观望。策略目标 0%，实盘已为 0%，无持仓需要管理。'
+            f'等待 ETF 给出新的入市信号（如均线突破 + 成交量放量配合）再建仓。'
+        )
+    return ''
+
+
+def _build_decision_context(strategy_id, target, live_pos, action):
+    """看多 → 列出风险；看空 → 列出其他市场的看多策略 + 防御资产。返回 (view_bias, risks, opportunities)。"""
+    if target >= 0.5 or action in ('enter', 'add'):
+        view_bias = 'bullish'
+    elif target <= 0.3 or action in ('exit', 'trim', 'flat'):
+        view_bias = 'bearish'
+    else:
+        view_bias = 'neutral'
+
+    risks = []
+    opportunities = []
+
+    # 实时风险因子（VIX / 利率 / 200dma 偏离等）：动态条目排在静态文案之前
+    dynamic = _load_risk_signals()
+    dyn_by_strat = (dynamic or {}).get('by_strategy', {}).get(strategy_id, {})
+    dyn_risks = list(dyn_by_strat.get('bullish_risks_dynamic', []))
+    dyn_opps = list(dyn_by_strat.get('bearish_opportunities_dynamic', []))
+
+    if view_bias == 'bullish':
+        risks = dyn_risks \
+              + list(_BULLISH_RISKS_BY_STRATEGY.get(strategy_id, [])) \
+              + list(_BULLISH_RISKS_GENERAL)
+    elif view_bias == 'bearish':
+        # 扫描其他策略的最新 target_exposure，挑出 target >= 0.5 的列入「其他市场看多」
+        cross = []
+        for other_id, other_cache in (
+            list(TIMING_STRATEGY_MAP.items()) + list(US_TIMING_STRATEGY_MAP.items())
+        ):
+            if other_id == strategy_id:
+                continue
+            cache = TIMING_CACHE if other_id in TIMING_STRATEGY_MAP else US_TIMING_CACHE
+            df = cache.get(other_id)
+            if df is None or len(df) == 0:
+                continue
+            try:
+                other_target = float(df.iloc[-1].get('target_exposure', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if other_target >= 0.5:
+                cross.append(
+                    f'{_STRATEGY_DISPLAY.get(other_id, other_id)} 当前目标 {other_target*100:.0f}%，'
+                    f'可考虑把部分资金分散到该方向。'
+                )
+        # 顺序：动态触发（VIX 极端 / 利率拐点 / 深度超卖）→ 跨市场看多 → 静态防御资产
+        if dyn_opps:
+            opportunities.extend(dyn_opps)
+        if cross:
+            opportunities.extend(cross)
+        region = _REGION_OF_STRATEGY.get(strategy_id, 'cn')
+        opportunities.extend(_BEARISH_OPPS_BY_REGION.get(region, []))
+
+    return view_bias, risks, opportunities
+
+
+def _build_latest_signal(strategy_id, strategy, result_df, profile=None):
+    """从 result_df 末尾构造「最新入市信号卡」的统一 dict。
+
+    返回字段对前端友好：as_of_date 是最新已收盘交易日；target_exposure 是 t+1 应持仓比例；
+    action_label 给出可读操作；exec_basis 描述执行规则；status 标记 production / research。
+    同时返回 live_* 字段，让 live 页基于「实盘当前仓位 vs 目标」给出准确的建仓/加仓/减仓/清仓建议。
+    """
+    if result_df is None or len(result_df) == 0:
+        return {
+            'strategy_id': strategy_id,
+            'name': strategy.get_display_name() if strategy else strategy_id,
+            'status': _STRATEGY_RULE14_STATUS.get(strategy_id, 'research'),
+            'as_of_date': None,
+            'error': '缓存未加载',
+        }
+    latest = result_df.iloc[-1]
+    prev = result_df.iloc[-2] if len(result_df) >= 2 else latest
+    target = float(latest.get('target_exposure', 0.0) or 0.0)
+    prev_exp = float(prev.get('target_exposure', 0.0) or 0.0)
+    rebalance = str(latest.get('rebalance_action') or 'hold')
+    signal = str(latest.get('signal_action') or 'hold')
+    exposure_delta = round(target - prev_exp, 4)
+    ref_close = float(latest.get('etf_close', float('nan')))
+    if pd.isna(ref_close):
+        ref_close = None
+    ref_open = float(latest.get('etf_open', float('nan')))
+    if pd.isna(ref_open):
+        ref_open = None
+    etf_code = latest.get('etf_code') or None
+    etf_name = latest.get('etf_name') or (strategy.get_index_name() if strategy else None)
+    status = _STRATEGY_RULE14_STATUS.get(strategy_id, 'research')
+    # 实盘视角：基于当前实盘仓位推导真实建议（修复「实盘空仓但显示继续持有」之类的错配）
+    live_position = _latest_live_position(strategy_id)
+    live_action = _derive_action_from_delta(live_position, target)
+    live_delta = round(target - live_position, 4)
+    # 行动详解 + 看多风险 / 看空机会
+    action_rationale = _build_action_rationale(live_action, live_position, target, ref_open, ref_close, strategy_id)
+    view_bias, risks, opportunities = _build_decision_context(strategy_id, target, live_position, live_action)
+    profile_window = (profile or {}).get('window_metrics', {}) if isinstance(profile, dict) else {}
+    if not isinstance(profile_window, dict):
+        profile_window = {}
+    win = profile_window.get('recent_6m', {}) if isinstance(profile_window, dict) else {}
+    # 策略验证概览：训练 cutoff / holdout 区间 / 训练区核心指标 / OOS 真实表现
+    holdout_payload = _load_holdout_report(strategy_id) or {}
+    holdout_metrics = holdout_payload.get('holdout_metrics') if isinstance(holdout_payload, dict) else None
+    training_metrics = holdout_payload.get('training_window_metrics') or profile_window or {}
+    if not isinstance(training_metrics, dict):
+        training_metrics = {}
+    experiment_meta = {
+        'training_cutoff': (profile or {}).get('training_cutoff') if isinstance(profile, dict) else None,
+        'holdout_start': holdout_payload.get('holdout_start'),
+        'holdout_end': holdout_payload.get('holdout_end'),
+        'holdout_bars': holdout_payload.get('holdout_bars'),
+        'training_recent_6m': training_metrics.get('recent_6m'),
+        'training_full_pre_cutoff': training_metrics.get('full_pre_cutoff'),
+        'holdout_metrics': holdout_metrics,
+    } if (profile or holdout_payload) else None
+    # macro_v32 fallback profile 场景：window_metrics 为 None 时，从 holdout_metrics 推一份 6m 展示数据
+    if (not win) and isinstance(holdout_metrics, dict):
+        win = {
+            'total_return': holdout_metrics.get('final_nav', 1.0) - 1.0,
+            'max_drawdown': holdout_metrics.get('max_drawdown', 0.0),
+        }
+    return {
+        'strategy_id': strategy_id,
+        'name': strategy.get_display_name() if strategy else strategy_id,
+        'index_name': strategy.get_index_name() if strategy else etf_name,
+        'etf_code': etf_code,
+        'etf_name': etf_name,
+        'status': status,
+        'passes_rule14': status == 'production',
+        'as_of_date': pd.to_datetime(latest['交易日期']).strftime('%Y-%m-%d'),
+        'target_exposure': round(target, 4),
+        'prev_exposure': round(prev_exp, 4),
+        'exposure_delta': exposure_delta,
+        'rebalance_action': rebalance,
+        'rebalance_label': _REBALANCE_ACTION_LABELS.get(rebalance, rebalance),
+        # 相对当前实盘仓位的建议（优先在 live 页展示）
+        'live_position': round(live_position, 4),
+        'live_exposure_delta': live_delta,
+        'live_rebalance_action': live_action,
+        'live_rebalance_label': _REBALANCE_ACTION_LABELS.get(live_action, live_action),
+        # 决策详解：行动原因、风险（看多）、跨市场机会（看空）
+        'action_rationale': action_rationale,
+        'view_bias': view_bias,
+        'risks': risks,
+        'opportunities': opportunities,
+        'signal_action': signal,
+        'signal_label': _SIGNAL_ACTION_LABELS.get(signal, signal),
+        'reason_summary': latest.get('reason_summary') or '',
+        'ref_close': ref_close,
+        'ref_open': ref_open,
+        'exec_basis': '信号基于 T 日收盘生成；T+1 交易日按开盘价执行；当日盈亏按 T+1 收盘价标记。',
+        'nav': round(float(latest.get('累积净值', 1.0)), 4) if pd.notna(latest.get('累积净值', None)) else None,
+        'profile_recent_6m': {
+            'strategy_total_return_pct': round(float(win.get('total_return', 0.0)) * 100, 2) if isinstance(win, dict) and 'total_return' in win else None,
+            'etf_total_return_pct': round(float(win.get('etf_total_return', 0.0)) * 100, 2) if isinstance(win, dict) and 'etf_total_return' in win else None,
+            'excess_return_pct': round(float(win.get('excess_return', 0.0)) * 100, 2) if isinstance(win, dict) and 'excess_return' in win else None,
+            'max_drawdown_pct': round(float(win.get('max_drawdown', 0.0)) * 100, 2) if isinstance(win, dict) and 'max_drawdown' in win else None,
+            'etf_max_drawdown_pct': round(float(win.get('etf_max_drawdown', 0.0)) * 100, 2) if isinstance(win, dict) and 'etf_max_drawdown' in win else None,
+        } if isinstance(win, dict) and win else None,
+        'experiment_meta': experiment_meta,
+    }
+
+
+@app.route('/api/timing/latest_signal')
+def api_timing_latest_signal():
+    """A股某个择时策略的最新入市信号（单策略详情）。"""
+    strategy_name = request.args.get('strategy', 'csi1000_timing')
+    if strategy_name not in TIMING_STRATEGY_MAP:
+        return jsonify({'error': f'未知策略: {strategy_name}'}), 404
+    try:
+        init_timing_cache()
+    except Exception as e:
+        return jsonify({'error': f'择时缓存初始化失败: {e}'}), 500
+    strategy = TIMING_STRATEGY_MAP[strategy_name]()
+    result = TIMING_CACHE.get(strategy_name)
+    profile = _load_best_profile(strategy_name)
+    return jsonify(_build_latest_signal(strategy_name, strategy, result, profile))
+
+
+@app.route('/api/us_timing/latest_signal')
+def api_us_timing_latest_signal():
+    """美股某个择时策略的最新入市信号。"""
+    strategy_name = request.args.get('strategy', 'macro_v32_timing')
+    if strategy_name not in US_TIMING_STRATEGY_MAP:
+        return jsonify({'error': f'未知策略: {strategy_name}'}), 404
+    try:
+        init_us_timing_cache()
+    except Exception as e:
+        return jsonify({'error': f'美股择时缓存初始化失败: {e}'}), 500
+    strategy = US_TIMING_STRATEGY_MAP[strategy_name]()
+    result = US_TIMING_CACHE.get(strategy_name)
+    profile = _load_best_profile(strategy_name)
+    return jsonify(_build_latest_signal(strategy_name, strategy, result, profile))
+
+
+# ====== 实盘记录持久化 ======
+def _ensure_live_trades_file():
+    os.makedirs(_LIVE_DATA_DIR, exist_ok=True)
+    if not os.path.exists(_LIVE_TRADES_FILE):
+        with open(_LIVE_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = _csv.DictWriter(f, fieldnames=_LIVE_TRADES_COLUMNS)
+            writer.writeheader()
+
+
+def _read_live_trades():
+    _ensure_live_trades_file()
+    rows = []
+    with open(_LIVE_TRADES_FILE, 'r', newline='', encoding='utf-8') as f:
+        reader = _csv.DictReader(f)
+        for r in reader:
+            rows.append(r)
+    return rows
+
+
+def _write_live_trades(rows):
+    tmp_path = _LIVE_TRADES_FILE + '.tmp'
+    with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+        writer = _csv.DictWriter(f, fieldnames=_LIVE_TRADES_COLUMNS)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r.get(k, '') for k in _LIVE_TRADES_COLUMNS})
+    os.replace(tmp_path, _LIVE_TRADES_FILE)
+
+
+def _next_record_id(rows):
+    max_id = 0
+    for r in rows:
+        try:
+            max_id = max(max_id, int(r.get('record_id') or 0))
+        except (TypeError, ValueError):
+            continue
+    return max_id + 1
+
+
+@app.route('/api/live/records', methods=['GET'])
+def api_live_records():
+    strategy = request.args.get('strategy')
+    with _LIVE_TRADES_LOCK:
+        rows = _read_live_trades()
+    if strategy:
+        rows = [r for r in rows if r.get('strategy') == strategy]
+    rows.sort(key=lambda r: (r.get('date') or '', r.get('record_id') or ''))
+    return jsonify({'records': rows})
+
+
+@app.route('/api/live/record', methods=['POST'])
+def api_live_record_create():
+    payload = request.get_json(silent=True) or {}
+    required = ['date', 'strategy']
+    missing = [k for k in required if payload.get(k) in (None, '')]
+    if missing:
+        return jsonify({'error': f'缺少字段: {missing}'}), 400
+    known_strategies = set(TIMING_STRATEGY_MAP.keys()) | set(US_TIMING_STRATEGY_MAP.keys())
+    if payload['strategy'] not in known_strategies:
+        return jsonify({'error': f'未知策略: {payload["strategy"]}'}), 400
+
+    strategy = payload['strategy']
+    # 资金口径：用户可在表单覆盖，否则用默认 5w
+    try:
+        capital = float(payload.get('capital') or _LIVE_INITIAL_CAPITAL)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'capital 必须是数值'}), 400
+    if capital <= 0:
+        return jsonify({'error': 'capital 必须 > 0'}), 400
+
+    # 新口径：用户提交 成交价 + 持仓股数，actual_position 由后端算 = price * shares / capital
+    # 旧口径：直接传 actual_position（保留兼容，便于已有调用方/测试脚本）
+    exec_price = payload.get('exec_price')
+    shares = payload.get('shares')
+    actual_position = payload.get('actual_position')
+
+    if exec_price not in (None, '') and shares not in (None, ''):
+        try:
+            exec_price_f = float(exec_price)
+            shares_f = float(shares)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'exec_price / shares 必须是数值'}), 400
+        if exec_price_f <= 0 or shares_f < 0:
+            return jsonify({'error': 'exec_price 必须 > 0，shares 必须 >= 0'}), 400
+        holding_value = exec_price_f * shares_f
+        actual_position_f = holding_value / capital
+        if actual_position_f > 1.0:
+            # clamp，避免超过 100% 仓位（这里仅限制记账口径，不阻止用户加杠杆，但要给出提示）
+            actual_position_f = 1.0
+        exec_price_str = f'{exec_price_f:.4f}'
+        shares_str = f'{shares_f:.4f}' if shares_f != int(shares_f) else str(int(shares_f))
+    elif actual_position not in (None, ''):
+        try:
+            actual_position_f = float(actual_position)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'actual_position 必须是 0~1 的浮点数'}), 400
+        if not (0.0 <= actual_position_f <= 1.0):
+            return jsonify({'error': 'actual_position 必须在 [0, 1] 之间'}), 400
+        exec_price_str = str(exec_price or '')
+        shares_str = str(shares or '')
+    else:
+        return jsonify({'error': '请提供 exec_price + shares，或直接提供 actual_position'}), 400
+
+    with _LIVE_TRADES_LOCK:
+        rows = _read_live_trades()
+        new_id = _next_record_id(rows)
+        new_row = {
+            'record_id': str(new_id),
+            'date': str(payload['date']),
+            'strategy': str(strategy),
+            'signal_target': str(payload.get('signal_target') or ''),
+            'actual_position': f'{actual_position_f:.4f}',
+            'exec_price': exec_price_str,
+            'capital': f'{capital:.2f}',
+            'notes': str(payload.get('notes') or ''),
+            'created_at': _datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'shares': shares_str,
+        }
+        rows.append(new_row)
+        _write_live_trades(rows)
+    return jsonify({'ok': True, 'record': new_row})
+
+
+@app.route('/api/live/record/<int:record_id>', methods=['DELETE'])
+def api_live_record_delete(record_id):
+    with _LIVE_TRADES_LOCK:
+        rows = _read_live_trades()
+        kept = [r for r in rows if str(r.get('record_id')) != str(record_id)]
+        if len(kept) == len(rows):
+            return jsonify({'error': f'未找到 record_id={record_id}'}), 404
+        _write_live_trades(kept)
+    return jsonify({'ok': True, 'deleted': record_id})
+
+
+@app.route('/api/live/reconcile')
+def api_live_reconcile():
+    """单策略对账：返回 策略 NAV 序列 vs 实盘 NAV 序列（按实盘起点重置策略基准）。
+
+    实盘 NAV 由 actual_position 走「与策略相同的 ETF 收盘日收益」逻辑近似拟合：
+    每天 nav_t+1 = nav_t * (1 + actual_position * etf_daily_return_t+1) - 手续费忽略。
+    用户的 exec_price/capital 字段仅供记录，不参与对账（实盘真实成交太碎，过度建模反失真）。
+    """
+    strategy_name = request.args.get('strategy')
+    if not strategy_name:
+        return jsonify({'error': '缺少 strategy 参数'}), 400
+    cache = TIMING_CACHE if strategy_name in TIMING_STRATEGY_MAP else US_TIMING_CACHE
+    if strategy_name not in TIMING_STRATEGY_MAP and strategy_name not in US_TIMING_STRATEGY_MAP:
+        return jsonify({'error': f'未知策略: {strategy_name}'}), 404
+    if strategy_name in TIMING_STRATEGY_MAP:
+        try:
+            init_timing_cache()
+        except Exception as e:
+            return jsonify({'error': f'策略缓存初始化失败: {e}'}), 500
+    else:
+        try:
+            init_us_timing_cache()
+        except Exception as e:
+            return jsonify({'error': f'美股策略缓存初始化失败: {e}'}), 500
+    result = cache.get(strategy_name)
+    if result is None or len(result) == 0:
+        return jsonify({'error': '策略缓存为空'}), 500
+    with _LIVE_TRADES_LOCK:
+        all_rows = _read_live_trades()
+    live_rows = sorted(
+        [r for r in all_rows if r.get('strategy') == strategy_name and r.get('date')],
+        key=lambda r: r['date'],
+    )
+    if not live_rows:
+        # 默认空仓初始状态（CLAUDE.md 规则 15）：
+        # 没有任何实盘记录时，实盘 NAV = 1.0，actual_position = 0；
+        # 不回放策略历史，等待用户录入第一笔实盘交易。
+        return jsonify({
+            'strategy_id': strategy_name,
+            'live_records': 0,
+            'empty_state': True,
+            'initial_nav': 1.0,
+            'initial_position': 0.0,
+            'initial_capital': _LIVE_INITIAL_CAPITAL,
+            'currency': _LIVE_CURRENCY.get(strategy_name, 'CNY'),
+            'lot_size': _LIVE_LOT_SIZE.get(strategy_name, 1),
+            'message': '默认空仓状态：实盘 NAV = 1.0，当前持仓 = 0%。录入第一笔实盘交易后开始对账。',
+            'series': [],
+        })
+    start_date = pd.to_datetime(live_rows[0]['date'])
+    df = result.copy()
+    df['交易日期'] = pd.to_datetime(df['交易日期'])
+    cache_max = df['交易日期'].max()
+    df = df[df['交易日期'] >= start_date].reset_index(drop=True)
+    if len(df) == 0:
+        # 实盘录入日期晚于策略缓存的最后一根日线（例如刚刚录入「今天」但 ETF 数据还没刷新）。
+        # 返回 200 + 提示语，而不是 500——避免前端把它和「默认空仓」混在一起。
+        return jsonify({
+            'strategy_id': strategy_name,
+            'live_records': len(live_rows),
+            'empty_state': False,
+            'pending_cache': True,
+            'cache_max_date': cache_max.strftime('%Y-%m-%d') if pd.notna(cache_max) else None,
+            'first_record_date': start_date.strftime('%Y-%m-%d'),
+            'initial_capital': _LIVE_INITIAL_CAPITAL,
+            'currency': _LIVE_CURRENCY.get(strategy_name, 'CNY'),
+            'lot_size': _LIVE_LOT_SIZE.get(strategy_name, 1),
+            'message': f'已录入 {len(live_rows)} 条实盘记录，但首条日期 {start_date.strftime("%Y-%m-%d")} 已超过策略缓存的最后交易日 {cache_max.strftime("%Y-%m-%d") if pd.notna(cache_max) else "—"}。等下次数据刷新后将自动纳入对账。',
+            'series': [],
+        })
+
+    # 策略 NAV：在 start_date 重置为 1.0
+    base_nav = float(df['累积净值'].iloc[0]) or 1.0
+    df['strategy_nav'] = df['累积净值'].astype(float) / base_nav
+
+    # 实盘 NAV：用 actual_position 顺序回填，每日 close→close
+    pos_by_date = {}
+    for r in live_rows:
+        try:
+            pos_by_date[pd.to_datetime(r['date']).strftime('%Y-%m-%d')] = float(r['actual_position'] or 0.0)
+        except ValueError:
+            continue
+    live_nav = 1.0
+    current_pos = 0.0
+    prev_close = None
+    series = []
+    for _, row in df.iterrows():
+        d = row['交易日期'].strftime('%Y-%m-%d')
+        etf_close = row.get('etf_close')
+        if d in pos_by_date:
+            current_pos = pos_by_date[d]
+        if prev_close is not None and pd.notna(etf_close) and pd.notna(prev_close) and prev_close > 0:
+            etf_ret = float(etf_close) / float(prev_close) - 1.0
+            live_nav *= (1.0 + current_pos * etf_ret)
+        prev_close = etf_close if pd.notna(etf_close) else prev_close
+        series.append({
+            'date': d,
+            'strategy_nav': round(float(row['strategy_nav']), 4),
+            'live_nav': round(float(live_nav), 4),
+            'actual_position': round(float(current_pos), 4),
+            'strategy_target': round(float(row.get('target_exposure', 0.0) or 0.0), 4),
+        })
+    return jsonify({
+        'strategy_id': strategy_name,
+        'live_records': len(live_rows),
+        'start_date': start_date.strftime('%Y-%m-%d'),
+        'initial_capital': _LIVE_INITIAL_CAPITAL,
+        'currency': _LIVE_CURRENCY.get(strategy_name, 'CNY'),
+        'lot_size': _LIVE_LOT_SIZE.get(strategy_name, 1),
+        'series': series,
+        'final_strategy_nav': series[-1]['strategy_nav'] if series else None,
+        'final_live_nav': series[-1]['live_nav'] if series else None,
+    })
+
+
+@app.route('/live')
+def page_live():
+    return render_template('live.html')
+
+
 @app.route('/api/timing/signals')
 def api_timing_signals():
     payload = []
@@ -2287,10 +3222,10 @@ def api_timing_backtest():
     _t0 = time.time()
     try:
         params = {}
-        for key in ['fast_window', 'slow_window', 'momentum_window', 'breakout_window', 'exit_window', 'trend_window', 'momentum_short_window', 'momentum_long_window', 'momentum_threshold', 'enter_threshold', 'add_threshold', 'trim_threshold', 'exit_threshold', 'max_entry_exposure', 'probe_entry_exposure']:
+        for key in ['fast_window', 'slow_window', 'momentum_window', 'breakout_window', 'exit_window', 'trend_window', 'momentum_short_window', 'momentum_long_window', 'momentum_threshold', 'enter_threshold', 'add_threshold', 'trim_threshold', 'exit_threshold', 'max_entry_exposure', 'probe_entry_exposure', 'sigmoid_k', 'max_leverage', 'base_position', 'inertia', 'crisis_vix', 'fed_block_weight', 'restrictive_threshold', 'pivot_relief', 'base_floor']:
             val = request.args.get(key, type=float)
             if val is not None:
-                params[key] = int(val) if key not in {'momentum_threshold', 'enter_threshold', 'add_threshold', 'trim_threshold', 'exit_threshold', 'max_entry_exposure', 'probe_entry_exposure'} else float(val)
+                params[key] = int(val) if key not in {'momentum_threshold', 'enter_threshold', 'add_threshold', 'trim_threshold', 'exit_threshold', 'max_entry_exposure', 'probe_entry_exposure', 'sigmoid_k', 'max_leverage', 'base_position', 'inertia', 'crisis_vix', 'fed_block_weight', 'restrictive_threshold', 'pivot_relief', 'base_floor'} else float(val)
         confirm_days = request.args.get('confirm_days', type=int)
         if confirm_days is not None:
             params['confirm_days'] = int(confirm_days)
@@ -2427,12 +3362,40 @@ def api_strategy_list():
     ])
 
 
+def _check_a_share_index_etf_alignment():
+    mismatches = []
+    for index_id in A_SHARE_INDEX_IDS:
+        try:
+            idx_df = get_index_daily(index_id)
+            etf_df = get_timing_etf_daily(index_id)
+        except Exception as exc:
+            mismatches.append({
+                'index_id': index_id,
+                'error': repr(exc),
+            })
+            continue
+        idx_max = pd.to_datetime(idx_df['date']).max() if idx_df is not None and len(idx_df) > 0 else None
+        etf_max = pd.to_datetime(etf_df['date']).max() if etf_df is not None and len(etf_df) > 0 else None
+        if idx_max is None or etf_max is None:
+            continue
+        if idx_max < etf_max:
+            mismatches.append({
+                'index_id': index_id,
+                'index_max_date': idx_max.strftime('%Y-%m-%d'),
+                'etf_max_date': etf_max.strftime('%Y-%m-%d'),
+            })
+    return mismatches
+
+
+
 def _run_index_data_update():
     """在后台线程中强制重新拉取指数与 timing ETF 数据，并重建择时缓存。"""
     global INDEX_RETURNS, INDEX_RETURNS_MAP, TIMING_PANEL, TIMING_CACHE
     status = _INDEX_UPDATE_STATUS
     status['stage'] = 'running'
     status['progress'] = 0
+    status['warning'] = None
+    status['details'] = None
 
     index_ids = list(INDEX_CONFIGS.keys())
     total = len(index_ids)
@@ -2457,6 +3420,12 @@ def _run_index_data_update():
 
         INDEX_RETURNS = INDEX_RETURNS_MAP.get('csi1000')
 
+        mismatches = _check_a_share_index_etf_alignment()
+        if mismatches:
+            status['warning'] = 'A股指数日线与对应ETF日线最新日期不一致'
+            status['details'] = mismatches
+            raise RuntimeError(f'A股指数/ETF日线不同步: {mismatches}')
+
         status['message'] = '正在重建指数日线面板...'
         status['progress'] = 70
         TIMING_PANEL = None
@@ -2477,6 +3446,8 @@ def _run_index_data_update():
         status['stage'] = 'error'
         status['message'] = f'更新失败: {e}'
         status['progress'] = 0
+        if status.get('details') is None:
+            status['details'] = {'error': repr(e)}
         print(f'[index_update ERROR] {e}', file=sys.stderr)
 
 
@@ -2487,6 +3458,8 @@ def api_update_index_data():
     _INDEX_UPDATE_STATUS['stage'] = 'idle'
     _INDEX_UPDATE_STATUS['message'] = ''
     _INDEX_UPDATE_STATUS['progress'] = 0
+    _INDEX_UPDATE_STATUS['warning'] = None
+    _INDEX_UPDATE_STATUS['details'] = None
     threading.Thread(target=_run_index_data_update, daemon=True).start()
     return jsonify({'status': 'started'})
 
@@ -2519,52 +3492,38 @@ def _run_data_update():
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cache_dir = os.path.join(repo_root, '.cache')
 
-        # Stage 1: 清理旧数据
-        status['stage'] = 'cleaning'
-        status['message'] = '正在清理旧月数据...'
-        status['progress_pct'] = 5
-        print(f'[update] 清理 {target_prefix} 旧数据', file=sys.stderr)
-
-        with open(csv_path, 'r', encoding='gbk') as f:
-            reader = _csv.reader(f)
-            headers = next(reader)
-            rows = [row for row in reader]
-
-        original_count = len(rows)
-        rows = [row for row in rows if not row[0].startswith(target_prefix)]
-        removed = original_count - len(rows)
-
-        for row in rows:
-            if row[0].startswith(prev_prefix) and len(row) > 54:
-                row[54] = '[]'
-
-        with open(csv_path, 'w', encoding='gbk', newline='') as f:
-            writer = _csv.writer(f)
-            writer.writerow(headers)
-            writer.writerows(rows)
-
-        print(f'[update] 移除 {removed} 行旧数据', file=sys.stderr)
-
-        # 删除旧缓存文件
-        for fname in [f'daily_{target_prefix}.pkl', f'rtquotes_{target_prefix}.pkl']:
-            fpath = os.path.join(cache_dir, fname)
-            if os.path.exists(fpath):
-                os.remove(fpath)
-
-        # Stage 2: 拉取新数据
+        # Stage 1: 增量拉取（每只股票本地日线缓存 + 仅补差值）
+        # 不再做破坏性清理：增量逻辑会以 upsert 方式重写本月数据行，
+        # 历史月份保持原样，prev_month 的 "下周期每天涨跌幅" 列由 supplement_csv_incremental 内部负责回填。
         status['stage'] = 'fetching'
-        status['message'] = '正在从网络获取最新行情数据（约2-3分钟）...'
+        status['message'] = '正在增量获取最新行情数据（首次约3-5分钟，之后只补差值）...'
         status['progress_pct'] = 10
-        print(f'[update] 开始拉取 {target_prefix} 数据', file=sys.stderr)
+        print(f'[update] 开始增量拉取 {target_prefix} 数据', file=sys.stderr)
 
-        count = _supplement_csv(
+        count = _supplement_csv_incremental(
             csv_path,
             target_year=target_year,
             target_month=target_month,
             cache_dir=cache_dir,
         )
-        print(f'[update] 数据拉取完成，新增 {count} 行', file=sys.stderr)
+        print(f'[update] 增量拉取完成，本月 upsert {count} 行', file=sys.stderr)
         status['progress_pct'] = 70
+
+        # Stage 2: 重建 parquet（load_data 优先读 parquet，若不刷新会读到陈旧数据）
+        parquet_path = csv_path.replace('.csv', '.parquet')
+        try:
+            status['message'] = '正在重建 Parquet 缓存...'
+            status['progress_pct'] = 72
+            print('[update] 重建 stock_data.parquet', file=sys.stderr)
+            _df_for_parquet = pd.read_csv(csv_path, encoding='gbk', low_memory=False)
+            _df_for_parquet.to_parquet(parquet_path, engine='pyarrow', compression='snappy', index=False)
+            del _df_for_parquet
+            print('[update] parquet 重建完成', file=sys.stderr)
+        except Exception as parquet_err:
+            # parquet 失败不致命：删掉旧 parquet，让 load_data fallback 到 CSV
+            print(f'[update] parquet 重建失败 ({parquet_err})，删除旧 parquet 强制 CSV fallback', file=sys.stderr)
+            if os.path.exists(parquet_path):
+                os.remove(parquet_path)
 
         # Stage 3: 清除所有内存缓存并重新加载
         status['stage'] = 'rebuilding_cache'
@@ -2771,6 +3730,84 @@ def _run_single_factor_backtest(top_k=5):
         })
 
     return results
+
+
+# ── 行业热度 ──────────────────────────────────────────────────────────────────
+_SECTOR_HEAT_FILE = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), '..', 'strategy', 'sector_weekly_heat.csv')
+)
+_SECTOR_HEAT_CACHE = {'mtime': 0, 'data': None}
+
+
+def _load_sector_heat():
+    """懒加载并缓存 sector_weekly_heat.csv（文件变更时自动刷新）。"""
+    try:
+        mtime = os.path.getmtime(_SECTOR_HEAT_FILE)
+    except FileNotFoundError:
+        return None
+    if _SECTOR_HEAT_CACHE['data'] is None or mtime != _SECTOR_HEAT_CACHE['mtime']:
+        df = pd.read_csv(_SECTOR_HEAT_FILE, encoding='utf-8-sig')
+        _SECTOR_HEAT_CACHE['data'] = df
+        _SECTOR_HEAT_CACHE['mtime'] = mtime
+    return _SECTOR_HEAT_CACHE['data']
+
+
+@app.route('/api/sector_heat')
+def api_sector_heat():
+    """
+    返回最近 N 周（默认 8 周）各行业涨跌幅热度。
+
+    Query params:
+      weeks   — 返回的周数（默认 8）
+      level   — 'l1'（默认，申万一级）| 'l2'（未支持，留扩展口）
+
+    Response JSON:
+      {
+        weeks:      ["2026-04 W1", ...],
+        industries: ["电子", ...],
+        data: [[row_idx, col_idx, pct_value], ...],   // ECharts heatmap series
+        latest_ranking: [{industry, avg_ret, rank}, ...]
+      }
+    """
+    n_weeks = request.args.get('weeks', 8, type=int)
+    df = _load_sector_heat()
+    if df is None:
+        return jsonify({'error': f'找不到 {_SECTOR_HEAT_FILE}，请先运行 scripts/compute_sector_weekly_heat.py'}), 503
+
+    latest_weeks = sorted(df['week_label'].unique())[-n_weeks:]
+    sub = df[df['week_label'].isin(latest_weeks)].copy()
+
+    industries = sorted(sub['industry'].unique(), key=lambda x: (
+        sub[sub['industry'] == x]['weekly_ret_pct'].mean()
+    ), reverse=True)
+    week_list = sorted(latest_weeks)
+    ind_idx = {ind: i for i, ind in enumerate(industries)}
+    week_idx = {w: j for j, w in enumerate(week_list)}
+
+    heat_data = []
+    for _, row in sub.iterrows():
+        i = ind_idx.get(row['industry'])
+        j = week_idx.get(row['week_label'])
+        if i is not None and j is not None:
+            heat_data.append([j, i, round(float(row['weekly_ret_pct']), 2)])
+
+    recent_4w = week_list[-4:]
+    ranking = (
+        sub[sub['week_label'].isin(recent_4w)]
+        .groupby('industry')['weekly_ret_pct']
+        .mean()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    ranking.columns = ['industry', 'avg_ret_4w']
+    ranking['rank'] = range(1, len(ranking) + 1)
+
+    return jsonify({
+        'weeks': week_list,
+        'industries': industries,
+        'data': heat_data,
+        'latest_ranking': ranking.to_dict(orient='records'),
+    })
 
 
 @app.route('/api/factor_single_backtest')

@@ -5,3 +5,12 @@ output/
 stock_data.csv
 缠中说禅笔记.pdf
 预期收益 投资者获利指南(高清).pdf
+
+# 实盘交易记录 — 受 CLAUDE.md 规则 15 保护，永远不提交，永远不被自动化操作覆盖
+data/live_trades.csv
+data/live_trades.csv.tmp
+
+# 实时风险因子离线产物（scripts/build_risk_signals.py 生成），随数据刷新而变，不入 git
+strategy/risk_signals.json
+# Holdout 结构化报告（scripts/build_holdout_reports.py 生成的 sibling json），不入 git
+strategy/holdout_report_*.json
