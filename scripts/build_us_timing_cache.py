@@ -23,6 +23,7 @@ BEST_PROFILE_DIR = os.path.join(REPO_ROOT, 'strategy')
 sys.path.insert(0, STD_DIR)
 
 from index_data import build_us_index_panel, describe_timing_etf_cache
+from utils.atomic_io import atomic_write_pickle as _atomic_write_pickle
 from timing import (
     run_timing_backtest,
     MacroV32TimingStrategy,
@@ -74,8 +75,23 @@ def _load_best_profile(strategy_name):
         return None
 
 
+# 这些键不在子类 __init__ 命名参数里（通常通过 **kwargs 转发或者后续 setattr 写入实例），
+# 必须在 inspect.signature 过滤之外，单独走 setattr 兜底，否则 best_profile 里的 base_floor /
+# realism 参数会被静默丢弃。CLAUDE.md §14 的 base_floor 红线就是因为这个 bug 失效过。
+_REALISM_DEFERRED_KEYS = {
+    'profit_lock_enabled', 'profit_lock_drawdown',
+    'profit_lock_level_1', 'profit_lock_level_2', 'profit_lock_level_3',
+    'slippage_bps', 'cash_interest_rate',
+    'commission_rate', 'commission_min',
+    'stamp_tax_rate', 'transfer_fee_rate',
+    'limit_max_delay_days',
+    'base_floor',
+}
+
+
 def build_strategy(strategy_name, strat_cls):
     sig = inspect.signature(strat_cls.__init__)
+    init_keys = set(sig.parameters.keys())
     defaults = dict(_US_TIMING_CACHE_DEFAULTS.get(strategy_name, {}))
     profile = _load_best_profile(strategy_name)
     if profile is not None:
@@ -84,9 +100,25 @@ def build_strategy(strategy_name, strat_cls):
         if overrides:
             print(f"[build] {strategy_name} overrides from best_profile: {sorted(overrides.keys())}")
         defaults.update(overrides)
-    valid = {k: v for k, v in defaults.items()
-             if k in sig.parameters and v is not None}
-    return strat_cls(**valid)
+    init_params = {k: v for k, v in defaults.items()
+                   if k in init_keys and k != 'self' and v is not None}
+    deferred = {k: v for k, v in defaults.items()
+                if k in _REALISM_DEFERRED_KEYS and k not in init_keys and v is not None}
+    instance = strat_cls(**init_params)
+    for k, v in deferred.items():
+        if k == 'profit_lock_enabled':
+            v = bool(v)
+        elif k == 'limit_max_delay_days':
+            v = max(int(v or 0), 0)
+        elif k == 'base_floor':
+            # floor 是 0~1 的仓位比例：上下都要 clamp，避免 best_profile 误写 >1 漏过。
+            v = min(max(float(v or 0.0), 0.0), 1.0)
+        else:
+            v = max(float(v or 0.0), 0.0)
+        setattr(instance, k, v)
+    if deferred:
+        print(f"[build] {strategy_name} deferred (setattr): {sorted(deferred.keys())}")
+    return instance
 
 
 def _apply_clean_window(panel, strategy):
@@ -121,8 +153,7 @@ def main():
                 print(f"[build] {sid} uses clean-window start={clean_meta['clean_start']} path={clean_meta['preferred_runtime_path']}")
             signal_df = strategy.run(strategy_panel.copy())
             result = run_timing_backtest(signal_df, strategy)
-            with open(out_path, 'wb') as f:
-                pickle.dump(result, f)
+            _atomic_write_pickle(out_path, result, produced_by=f"scripts/build_us_timing_cache:{sid}")
             final_nv = result['累积净值'].iloc[-1]
             print(f"[build] {sid} OK | rows={len(result)} | 累积净值={final_nv:.4f} -> {out_path}")
         except Exception as e:

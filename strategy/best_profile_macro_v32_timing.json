@@ -1,7 +1,7 @@
 {
   "strategy_id": "macro_v32_timing",
   "training_cutoff": "2025-11-30",
-  "generated_at": "2026-05-25T16:21:56",
+  "generated_at": "2026-05-28T10:35:17",
   "training_data_policy": {
     "mode": "full_pre_cutoff"
   },
@@ -13,7 +13,7 @@
   "full_nav_floor_ratio": 1.0,
   "default_full_nav": 4.1012,
   "fallback_to_default": true,
-  "score": NaN,
+  "score": null,
   "tuned_params": {
     "sigmoid_k": 1.2,
     "max_leverage": 1.4,

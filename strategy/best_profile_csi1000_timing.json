@@ -1,17 +1,24 @@
 {
   "strategy_id": "csi1000_timing",
   "training_cutoff": "2025-11-30",
-  "generated_at": "2026-05-23T19:34:43",
-  "score_formula": "0.4*Calmar(6m) + 0.3*Calmar(1y) + 0.3*Calmar(full_pre_cutoff)  [floor: full_nav >= 1.00*default]",
+  "generated_at": "2026-05-28T10:30:22",
+  "training_data_policy": {
+    "mode": "full_pre_cutoff"
+  },
+  "score_formula": "window_score = (excess_return - 1.5*max(0, dd_excess)) * 100; score = 0.4*ws(6m) + 0.3*ws(1y) + 0.3*ws(full_pre_cutoff) [discard: any window excess_ret < -5.0pp or dd_excess > 5.0pp; full_nav >= 1.00*default]",
   "maxdd_threshold": 0.2,
+  "excess_return_tolerance_pct": 5.0,
+  "dd_excess_tolerance_pct": 5.0,
+  "dd_excess_penalty": 1.5,
   "full_nav_floor_ratio": 1.0,
-  "default_full_nav": 1.0504,
-  "fallback_to_default": false,
-  "score": 4.917,
+  "default_full_nav": 1.1417,
+  "fallback_to_default": true,
+  "score": null,
   "tuned_params": {
-    "breakout_window": 10,
-    "exit_window": 5,
-    "trend_window": 50
+    "breakout_window": 15,
+    "exit_window": 7,
+    "trend_window": 50,
+    "base_floor": 0.5
   },
   "all_params": {
     "exposure_mode": "staged",
@@ -23,35 +30,51 @@
     "max_entry_exposure": 0.5,
     "probe_entry_exposure": 0.25,
     "probe_confirm_days": 1,
-    "breakout_window": 10,
-    "exit_window": 5,
-    "trend_window": 50
+    "breakout_window": 15,
+    "exit_window": 7,
+    "trend_window": 50,
+    "base_floor": 0.5
   },
   "window_metrics": {
     "recent_6m": {
-      "final_nav": 1.0929,
-      "annual_return": 0.1998,
-      "max_drawdown": -0.0206,
-      "calmar": 9.69,
-      "rebalance_count": 20,
-      "avg_exposure": 0.5285
+      "final_nav": 1.1393,
+      "total_return": 0.13929999999999998,
+      "annual_return": 0.30670000000000003,
+      "max_drawdown": -0.0334,
+      "calmar": 9.18,
+      "rebalance_count": 13,
+      "avg_exposure": 0.748,
+      "etf_total_return": 0.17810599478714173,
+      "etf_max_drawdown": -0.049285714285714266,
+      "excess_return": -0.03880599478714175,
+      "dd_excess": -0.015885714285714267
     },
     "recent_1y": {
-      "final_nav": 1.0829,
-      "annual_return": 0.08380000000000001,
-      "max_drawdown": -0.0282,
-      "calmar": 2.98,
-      "rebalance_count": 37,
-      "avg_exposure": 0.3523
+      "final_nav": 1.1425,
+      "total_return": 0.14250000000000007,
+      "annual_return": 0.1442,
+      "max_drawdown": -0.0501,
+      "calmar": 2.88,
+      "rebalance_count": 21,
+      "avg_exposure": 0.6622,
+      "etf_total_return": 0.1905179982440739,
+      "etf_max_drawdown": -0.0906757912745938,
+      "excess_return": -0.04801799824407382,
+      "dd_excess": -0.0405757912745938
     },
     "full_pre_cutoff": {
-      "final_nav": 1.1332,
-      "annual_return": 0.0647,
-      "max_drawdown": -0.131,
-      "calmar": 0.49,
-      "rebalance_count": 57,
-      "avg_exposure": 0.2593
+      "final_nav": 1.1417,
+      "total_return": 0.14169999999999994,
+      "annual_return": 0.0687,
+      "max_drawdown": -0.12789999999999999,
+      "calmar": 0.54,
+      "rebalance_count": 33,
+      "avg_exposure": 0.6268,
+      "etf_total_return": 0.36281407035175883,
+      "etf_max_drawdown": -0.13153594771241828,
+      "excess_return": -0.2211140703517589,
+      "dd_excess": -0.0036359477124182915
     }
   },
-  "grid_size": 36
+  "grid_size": 108
 }

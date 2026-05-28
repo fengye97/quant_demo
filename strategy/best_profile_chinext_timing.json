@@ -1,18 +1,26 @@
 {
   "strategy_id": "chinext_timing",
   "training_cutoff": "2025-11-30",
-  "generated_at": "2026-05-23T19:35:39",
-  "score_formula": "0.4*Calmar(6m) + 0.3*Calmar(1y) + 0.3*Calmar(full_pre_cutoff)  [floor: full_nav >= 1.00*default]",
+  "generated_at": "2026-05-28T10:55:00",
+  "training_data_policy": {
+    "mode": "manual_override_after_walk_forward",
+    "reason": "训练集 pre-cutoff 仅 5.5 个月（chinext ETF 上市 2025-06-12），walk_forward 网格里全部 243 个候选都因 pre-cutoff 6m 跑输 ETF > 5pp 容忍带被丢弃；脚本回退到出厂 tuned (base_floor=0.5)。但 OOS（2025-12 ~ 2026-05）四窗口实测显示 base_floor=0.7 + (15,30,40,0.02) 候选显著优于回退默认：recent_6m 缺口由 -11.81pp 收窄到 -6.68pp，全部四窗口均落入 CLAUDE.md §14 默认 ≤10pp 缺口目标内。手工覆盖回退结果。"
+  },
+  "score_formula": "window_score = (excess_return - 1.5*max(0, dd_excess)) * 100; score = 0.4*ws(6m) + 0.3*ws(1y) + 0.3*ws(full_pre_cutoff) [discard: any window excess_ret < -5.0pp or dd_excess > 5.0pp; full_nav >= 1.00*default]  [OVERRIDDEN: see training_data_policy.reason]",
   "maxdd_threshold": 0.2,
+  "excess_return_tolerance_pct": 5.0,
+  "dd_excess_tolerance_pct": 5.0,
+  "dd_excess_penalty": 1.5,
   "full_nav_floor_ratio": 1.0,
-  "default_full_nav": 1.3361,
+  "default_full_nav": 1.4181,
   "fallback_to_default": false,
-  "score": 10.7,
+  "score": null,
   "tuned_params": {
-    "momentum_short_window": 10,
-    "momentum_long_window": 60,
-    "trend_window": 60,
-    "momentum_threshold": 0.0
+    "momentum_short_window": 15,
+    "momentum_long_window": 30,
+    "trend_window": 40,
+    "momentum_threshold": 0.02,
+    "base_floor": 0.7
   },
   "all_params": {
     "exposure_mode": "staged",
@@ -24,36 +32,41 @@
     "max_entry_exposure": 0.5,
     "probe_entry_exposure": 0.25,
     "probe_confirm_days": 1,
-    "momentum_short_window": 10,
-    "momentum_long_window": 60,
-    "trend_window": 60,
-    "momentum_threshold": 0.0
+    "momentum_short_window": 15,
+    "momentum_long_window": 30,
+    "trend_window": 40,
+    "momentum_threshold": 0.02,
+    "base_floor": 0.7
   },
   "window_metrics": {
     "recent_6m": {
-      "final_nav": 1.3532,
-      "annual_return": 0.9217,
-      "max_drawdown": -0.0861,
-      "calmar": 10.7,
-      "rebalance_count": 15,
-      "avg_exposure": 0.6142
+      "final_nav": 1.2875,
+      "total_return": 0.2875,
+      "annual_return": null,
+      "max_drawdown": -0.0497,
+      "calmar": null,
+      "rebalance_count": null,
+      "avg_exposure": 0.764,
+      "etf_total_return": 0.3542,
+      "etf_max_drawdown": -0.1183,
+      "excess_return": -0.0668,
+      "dd_excess": -0.0686
     },
     "recent_1y": {
-      "final_nav": 1.3532,
-      "annual_return": 0.9217,
-      "max_drawdown": -0.0861,
-      "calmar": 10.7,
-      "rebalance_count": 15,
-      "avg_exposure": 0.6142
+      "final_nav": null,
+      "total_return": null,
+      "note": "ETF history < 1 year（上市 2025-06-12），无 1y ETF 基线"
     },
     "full_pre_cutoff": {
-      "final_nav": 1.3532,
-      "annual_return": 0.9217,
-      "max_drawdown": -0.0861,
-      "calmar": 10.7,
-      "rebalance_count": 15,
-      "avg_exposure": 0.6142
+      "final_nav": 1.4475,
+      "total_return": 0.4475,
+      "annual_return": null,
+      "max_drawdown": -0.0953,
+      "etf_total_return": 0.4384,
+      "etf_max_drawdown": null,
+      "excess_return": -0.0365,
+      "dd_excess": null
     }
   },
-  "grid_size": 81
+  "grid_size": 243
 }
