@@ -148,6 +148,22 @@ def _replay_timing_positions(result_df, initial_capital, buy_cost, sell_cost,
         result = result.loc[~invalid_mask].copy().reset_index(drop=True)
         if len(result) == 0:
             return result
+
+    # === Invariants：数据完整性（drop 完无效行后必须严格满足） ===
+    _etf_open_arr = result['etf_open'].astype(float)
+    _etf_close_arr = result['etf_close'].astype(float)
+    assert (_etf_open_arr > 0).all(), (
+        f"ETF 包含 etf_open<=0 的行，无法撮合: "
+        f"{result.loc[~(_etf_open_arr > 0), ['交易日期', 'etf_open']].head().to_dict('records')}"
+    )
+    assert (_etf_close_arr > 0).all(), (
+        f"ETF 包含 etf_close<=0 的行: "
+        f"{result.loc[~(_etf_close_arr > 0), ['交易日期', 'etf_close']].head().to_dict('records')}"
+    )
+    _dates_series = pd.to_datetime(result['交易日期'])
+    assert _dates_series.is_monotonic_increasing, "ETF 日期未升序"
+    first_real_date = _dates_series.iloc[0]
+
     settlement_mode = str(settlement or 'T+1').upper()
     market_code = str(market or 'SH').upper()
     # 2025 起深交所统一对深市 ETF 收过户费（0.001‰），沪深双市统一
@@ -365,6 +381,13 @@ def _replay_timing_positions(result_df, initial_capital, buy_cost, sell_cost,
                         fee_total = commission + transfer
                         slippage_cost = notional - open_notional
 
+                    # Invariant：trade 价格必须为正，日期不得早于 ETF 首日
+                    assert fill_price > 0, (
+                        f"buy trade 价格非正: date={current_date} fill_price={fill_price}"
+                    )
+                    assert current_date >= first_real_date, (
+                        f"inception leak: buy trade date={current_date} 早于 replay window 首日 {first_real_date}"
+                    )
                     current_units += qty
                     # T+1：买入份额到下个 bar 才能卖
                     if settlement_lag <= 0:
@@ -437,6 +460,13 @@ def _replay_timing_positions(result_df, initial_capital, buy_cost, sell_cost,
                     proceeds = notional - fee_total
                     realized_today = proceeds - cost_basis_sold
 
+                    # Invariant：trade 价格必须为正，日期不得早于 ETF 首日
+                    assert fill_price > 0, (
+                        f"sell trade 价格非正: date={current_date} fill_price={fill_price}"
+                    )
+                    assert current_date >= first_real_date, (
+                        f"inception leak: sell trade date={current_date} 早于 replay window 首日 {first_real_date}"
+                    )
                     current_units = max(current_units - qty, 0.0)
                     available_units = max(available_units - qty, 0.0)
                     # 卖出现金 T+1 才可用
@@ -655,10 +685,23 @@ def run_timing_backtest(signal_df, strategy, benchmark_returns=None):
 
 
 def _build_period_local_nav(result_df):
+    """窗口本地 NAV：从窗口首日 close 起算，cumprod 不含 row[0] 的当日收益。
+
+    背景（2026-05-28 修复）：row[0] 的 strategy_return 实际上是「窗口前一交易日 close →
+    窗口首日 close」的当日变化（mark-to-market 口径），这一天不在窗口区间内。
+    而同窗口的 ETF baseline (_build_etf_summary) 用 etf_close.iloc[0] 作起点，是窗口
+    内首日 close。两者起点错位会导致："策略一直 100% 满仓持有时，窗口超额本应是 0
+    (仅手续费)，但 UI 会把 row[0] 那天的 ETF 涨幅虚假地记成超额"。
+
+    修复：把 row[0] 的 return 置 0 再 cumprod，让 strategy NAV 与 ETF baseline 都
+    严格从窗口首日 close 起算。这与「reset_capital」语义一致——窗口起点资金重置后，
+    才开始累计盈亏。
+    """
     result = result_df.copy().reset_index(drop=True)
     if len(result) == 0:
         return pd.Series(dtype=float)
-    returns = result['strategy_return'].fillna(0.0).astype(float)
+    returns = result['strategy_return'].fillna(0.0).astype(float).copy()
+    returns.iloc[0] = 0.0
     return (1.0 + returns).cumprod()
 
 

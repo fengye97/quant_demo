@@ -347,6 +347,22 @@ Step 6: 排名 = 市值排名 * (1.0 - 0.05 * ma_score_norm)
 - 前端"近半年"小卡片起点与 API `recent_6m` 不一致（csi1000：API 7.48% vs UI 6.66%；sp500：API 0.21% vs UI 0.45%）。1m / 1q 卡片完全一致；不影响过线判定，留作下次前端任务。
 - 1y 窗口策略缓存里的 ETF 价格序列与 `*_etf_daily_qfq.csv` 起止价不同步（star50 缓存 1.021→1.814 vs CSV 1.001→1.720），策略与 ETF 同源对比内部一致；ETF 端的价格起源需要单独统一。
 
+### Bug fix #3（追加）：窗口本地 NAV 把窗口前一天涨幅算进了策略超额
+
+- **现象**：用户截图发现 `chinext_timing` / `star50_timing` 近一月都是"窗口首日满仓买入、之后从不卖出"，但 UI 仍显示超额 +1.44% / +3.15%。理论上满仓持有应等于 ETF 收益（仅手续费差），不应出现正超额。
+- **位置**：`stock_trade_demo/timing/backtest.py:687` `_build_period_local_nav`
+- **根因**：`(1.0 + result['strategy_return']).cumprod()` 把 row[0] 的 daily return 也算进了窗口本地 NAV。但 row[0] 的 `strategy_return` 实际是「窗口前一交易日 close → 窗口首日 close」的当日 mark-to-market 变化（见 `backtest.py:506-510`），这一天属于 warmup 末端、不在窗口区间内。而同窗口的 `_build_etf_summary` 用 `etf_close.iloc[0]` 作 ETF 基准起点（已是窗口内首日 close），口径错位导致策略获得 row[0] 那天 ETF 涨幅的"免费 1 天收益"。
+- **数值证据**（修复前 → 修复后；近一月 2026-04-28 → 2026-05-22）：
+  | 策略 | 修复前策略% / 超额 | 修复后策略% / 超额 | 备注 |
+  |---|---|---|---|
+  | star50 近1月 | 32.27% / +2.14 | **30.07% / -0.06** | 仅剩手续费差 |
+  | chinext 近1月 | 8.86% / -0.61 | **9.47% / 0.00** | 与 ETF 完全一致 |
+  | csi1000 近1月 | 1.21% / -0.69 | 1.41% / -0.49 | 该策略并非全程满仓，差异来自不同 row[0] |
+  | sp500 近半年 | 0.21% / -5.36 | 0.88% / -4.69 | 反向回收了约 0.7pp |
+- **修复**：在 `_build_period_local_nav` 内 `returns.iloc[0] = 0.0` 后再 cumprod。这让 strategy NAV 与 ETF baseline 都从窗口首日 close 起算，与 `reset_capital=True` 的语义一致。
+- **影响**：所有 `interval_windows` 口径（recent_1m / recent_1q / recent_6m / pre_6m_history）以及 `evaluate_timing_result(reset_capital=True)` 的窗口本地指标（年化 / 总收益率 / 回撤）。修复后 5 策略 × 3 窗口 = 15 格仍然全部过线（`sp500 近半年` 安全垫反而从 +0.21% 拓宽到 +0.88%）。
+- **未影响**：策略 result_df 缓存内容（不需重建 pkl），全历史 `evaluate_timing_result(reset_capital=False)`（用的是 `累积净值` 列，不走本函数），best_profile 文件本身。
+
 ---
 
 ## 当前择时交易逻辑（指数信号 + 选股门控）
