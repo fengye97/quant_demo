@@ -6,6 +6,7 @@ from timing.strategies import (
     NasdaqTimingStrategy,
     SP500TimingStrategy,
     MacroV32TimingStrategy,
+    GoldTimingStrategy,
 )
 from timing.backtest import (
     run_timing_backtest,
@@ -23,6 +24,7 @@ __all__ = [
     'NasdaqTimingStrategy',
     'SP500TimingStrategy',
     'MacroV32TimingStrategy',
+    'GoldTimingStrategy',
     'run_timing_backtest',
     'evaluate_timing_result',
     'timing_result_to_json',

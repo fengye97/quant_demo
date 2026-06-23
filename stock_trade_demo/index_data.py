@@ -6,10 +6,49 @@ and caches them under .cache/ to avoid re-fetching on every run.
 """
 
 import os
+import sys
 import json
 import logging
+import socket
+import urllib.error
 import urllib.request
+
 import pandas as pd
+from pandera.errors import SchemaError, SchemaErrors
+
+from utils.atomic_io import atomic_write_csv, sweep_dangling_tmps
+from schemas.index_panel import INDEX_DAILY_SCHEMA
+
+# 网络/解析类异常：允许 fall back to cache（短暂故障，不该让 batch 整体挂掉）。
+# pandera 的 SchemaError / SchemaErrors 不能并入这里 —— 那意味着上游数据脏，
+# 必须 raise，否则会静默把脏数据吞掉，反过来阻塞新数据落盘（Worker A 之前血泪教训）。
+_NETWORK_FETCH_EXCEPTIONS = (
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+    socket.timeout,
+    json.JSONDecodeError,
+    ConnectionError,
+    TimeoutError,
+    OSError,  # 关键：requests.exceptions.ConnectionError 继承 IOError（=OSError），
+              #       而 builtins.ConnectionError 跟 requests.ConnectionError 是平行类，
+              #       不加 OSError 会让 akshare 抛的瞬断异常穿透所有 fallback 直接挂掉
+    ValueError,  # _fetch_daily_kline 在 raw JSON 异常时 float() 会 raise ValueError
+    RuntimeError,  # _fetch_etf_daily_akshare 自抛 RuntimeError（空 frame / 缺列）
+)
+
+
+def _stringify_date_column(df):
+    """Return a shallow copy with the 'date' column rendered as 'YYYY-MM-DD' str.
+
+    The on-disk CSV always stores date as a string (CSV has no native date type);
+    this just makes the in-memory DataFrame match what pandera expects so the
+    declared INDEX_DAILY_SCHEMA can validate before any tmp file is written.
+    """
+    if 'date' not in df.columns:
+        return df
+    out = df.copy()
+    out['date'] = pd.to_datetime(out['date']).dt.strftime('%Y-%m-%d')
+    return out
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +91,13 @@ INDEX_CONFIGS = {
         'cache_file': 'sp500_monthly.csv',
         'daily_cache_file': 'sp500_daily.csv',
         'series_name': 'sp500_return',
+    },
+    'gold': {
+        'name': '黄金ETF',
+        'symbol': 'sh518880',
+        'cache_file': 'gold_monthly.csv',
+        'daily_cache_file': 'gold_daily.csv',
+        'series_name': 'gold_return',
     },
 }
 
@@ -115,7 +161,32 @@ TIMING_ETF_CONFIGS = {
         'market': 'SH',
         'dividend_adjust_method': 'qfq',
     },
+    'gold': {
+        'name': '黄金ETF',
+        'code': '518880',
+        'symbol': 'sh518880',
+        'daily_cache_file': 'gold_etf_daily.csv',
+        'settlement': 'T+1',
+        'limit_pct': 0.10,
+        'market': 'SH',
+        'dividend_adjust_method': 'qfq',
+    },
 }
+
+# ── 大宗商品 ETF 配置（黄金等，独立于股票指数页面） ──
+COMMODITY_ETF_CONFIGS = {
+    'gold': {
+        'name': '黄金ETF',
+        'code': '518880',
+        'symbol': 'sh518880',
+        'daily_cache_file': 'gold_etf_daily.csv',
+        'settlement': 'T+1',
+        'limit_pct': 0.10,
+        'market': 'SH',
+        'dividend_adjust_method': 'qfq',
+    },
+}
+COMMODITY_INDEX_IDS = {'gold'}
 
 
 def _cache_path(index_id):
@@ -158,6 +229,94 @@ def _sina_url(symbol):
         'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
         f'CN_MarketData.getKLineData?symbol={symbol}&scale=240&datalen=8000'
     )
+
+
+# ── 东方财富直连作为新浪的备选线路 ──
+# Sina 经常被限流或瞬断；东方财富走完全不同的 CDN（push2his.eastmoney.com），
+# 跟新浪共失败的概率极低。endpoint 不需要 API key、可直接 curl 验证。
+# symbol 形如 sh000852 / sz399006 → East Money secid 1.000852 / 0.399006
+def _em_secid_from_sina_symbol(symbol):
+    s = symbol.lower().strip()
+    if s.startswith('sh'):
+        return f'1.{s[2:]}'
+    if s.startswith('sz'):
+        return f'0.{s[2:]}'
+    raise ValueError(f'Unknown symbol format for East Money mapping: {symbol}')
+
+
+def _fetch_daily_kline_eastmoney(symbol):
+    """从东方财富 push2his 拉日 K（未复权，跟 Sina 同等口径）。
+
+    返回与 _fetch_daily_kline 完全一致的 DataFrame，可直接当 drop-in 替代。
+    """
+    secid = _em_secid_from_sina_symbol(symbol)
+    # klt=101 日线，fqt=0 未复权（跟 Sina 一致）
+    url = (
+        'https://push2his.eastmoney.com/api/qt/stock/kline/get'
+        f'?secid={secid}&fields1=f1,f2,f3,f4,f5,f6'
+        '&fields2=f51,f52,f53,f54,f55,f56,f57,f58'  # date, open, close, high, low, volume, amount, amplitude
+        '&klt=101&fqt=0&beg=20050101&end=20500101'
+    )
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent',
+                   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                   'AppleWebKit/537.36 (KHTML, like Gecko) '
+                   'Chrome/120.0.0.0 Safari/537.36')
+    req.add_header('Referer', 'https://quote.eastmoney.com/')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode('utf-8')
+
+    j = json.loads(raw)
+    klines = ((j.get('data') or {}).get('klines') or [])
+    if not klines:
+        raise RuntimeError(f'East Money returned no klines for secid={secid}')
+
+    records = []
+    for line in klines:
+        parts = line.split(',')
+        if len(parts) < 6:
+            continue
+        records.append({
+            'date': parts[0],
+            'open': float(parts[1]),
+            'close': float(parts[2]),
+            'high': float(parts[3]),
+            'low': float(parts[4]),
+            'volume': float(parts[5]),
+        })
+    if not records:
+        raise RuntimeError(f'East Money parsed 0 valid rows for secid={secid}')
+    df = pd.DataFrame(records)
+    df['date'] = pd.to_datetime(df['date'])
+    return df.sort_values('date').reset_index(drop=True)
+
+
+def _fetch_daily_kline_with_fallback(symbol):
+    """对指数/ETF 日 K 的多源 fetch：
+       第 1 条线：Sina (money.finance.sina.com.cn)
+       第 2 条线：East Money (push2his.eastmoney.com)
+    任一成功即返回；都失败时 raise，让调用方走 disk cache。
+    """
+    sources = [
+        ('Sina', lambda: _fetch_daily_kline(symbol)),
+        ('East Money', lambda: _fetch_daily_kline_eastmoney(symbol)),
+    ]
+    last_err = None
+    for name, fn in sources:
+        try:
+            df = fn()
+            if df is not None and len(df) > 0:
+                if last_err is not None:
+                    print(f"[index_data] {name} 救回了 {symbol}（上一条线 {type(last_err).__name__} 已 fail）",
+                          file=sys.stderr)
+                return df
+        except _NETWORK_FETCH_EXCEPTIONS as exc:
+            print(f"[index_data] {name} fetch failed for {symbol}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            last_err = exc
+            continue
+    # 全部线路都炸 → 抛最后一个错给上层
+    raise last_err if last_err else RuntimeError(f'all daily-kline sources failed for {symbol}')
 
 
 def _fetch_daily_kline(symbol):
@@ -245,8 +404,8 @@ def get_index_daily(index_id='csi1000', force_refetch=False):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
     try:
-        print(f"[index_data] Fetching {cfg['name']} daily K-line from Sina...")
-        df_daily = _fetch_daily_kline(cfg['symbol']).sort_values('date').reset_index(drop=True)
+        print(f"[index_data] Fetching {cfg['name']} daily K-line (Sina → East Money fallback)...")
+        df_daily = _fetch_daily_kline_with_fallback(cfg['symbol']).sort_values('date').reset_index(drop=True)
         fetched_max = pd.to_datetime(df_daily['date']).max() if len(df_daily) > 0 else None
         cached_max = pd.to_datetime(cached_df['date']).max() if cached_df is not None and len(cached_df) > 0 else None
 
@@ -258,10 +417,16 @@ def get_index_daily(index_id='csi1000', force_refetch=False):
             print(f"[index_data] {cfg['name']} daily cache already fresh through {cached_max.strftime('%Y-%m-%d')}; skip overwrite")
             return cached_df
 
-        df_daily.to_csv(cache_file, index=False)
+        atomic_write_csv(cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
+                         produced_by=f"index_data.get_index_daily:{index_id}")
         print(f"[index_data] Cached daily K-line to {cache_file}")
         return df_daily
-    except Exception as e:
+    except (SchemaError, SchemaErrors):
+        # 上游数据脏（open<=0 / date 格式错 / volume 越界 …）—— 硬失败，
+        # 绝不写脏数据进缓存，也不静默回退到旧缓存掩盖问题。
+        print(f"[index_data] FATAL fetched {cfg['name']} daily K-line failed schema validation; refusing to write cache")
+        raise
+    except _NETWORK_FETCH_EXCEPTIONS as e:
         print(f"[index_data] ERROR fetching {cfg['name']} daily K-line: {e}")
         if cached_df is not None:
             print(f"[index_data] Falling back to cached daily K-line for {cfg['name']}")
@@ -283,8 +448,14 @@ def get_a_share_trading_calendar(force_refetch=False):
 
     for symbol in ('sh000001', 'sz399001'):
         try:
-            df_daily = _fetch_daily_kline(symbol).sort_values('date').reset_index(drop=True)
-        except Exception:
+            # 用多源 fetcher：每个 symbol 都先 Sina 后 East Money，两条线全断才放弃
+            df_daily = _fetch_daily_kline_with_fallback(symbol).sort_values('date').reset_index(drop=True)
+        except (SchemaError, SchemaErrors):
+            # 与主 fetch 路径一致：上游数据脏 → 硬失败，不要悄悄写脏日历回 cache。
+            print(f"[index_data] FATAL trading-calendar fetch {symbol} failed schema validation; refusing to write cache")
+            raise
+        except _NETWORK_FETCH_EXCEPTIONS:
+            # 该 symbol 的所有线路都断 → 试下一个 symbol；都失败时下方再回退 cached_df。
             continue
         fetched_max = pd.to_datetime(df_daily['date']).max() if len(df_daily) > 0 else None
         cached_max = pd.to_datetime(cached_df['date']).max() if cached_df is not None and len(cached_df) > 0 else None
@@ -292,12 +463,29 @@ def get_a_share_trading_calendar(force_refetch=False):
             continue
         if cached_max is not None and fetched_max is not None and fetched_max == cached_max and cached_df is not None and len(cached_df) >= len(df_daily):
             return cached_df
-        df_daily[['date']].to_csv(cache_file, index=False)
+        atomic_write_csv(cache_file, df_daily[['date']], index=False,
+                         produced_by="index_data.get_a_share_trading_calendar")
         return df_daily[['date']]
 
     if cached_df is not None:
         return cached_df[['date']] if 'date' in cached_df.columns else cached_df
     raise RuntimeError('Failed to fetch A-share trading calendar and no cache exists.')
+
+
+def _select_preferred_timing_etf_cache(rows):
+    """Pick the runtime ETF cache without silently switching away from qfq.
+
+    运行时口径必须稳定：若 qfq 缓存存在且可读，就优先用 qfq，哪怕 legacy 更“新”。
+    fresher legacy 只能作为诊断信号，不应静默压过 qfq，否则会把未复权价格混进
+    回测、持仓估值和 benchmark 对比里。
+    """
+    preferred = next((item for item in rows if item.get('label') == 'preferred_qfq_cache'), None)
+    if preferred and preferred.get('exists') and not preferred.get('read_error'):
+        return preferred['path']
+    for item in rows:
+        if item.get('exists') and not item.get('read_error'):
+            return item['path']
+    return None
 
 
 def describe_timing_etf_cache(index_id='csi1000', adjust=None):
@@ -338,16 +526,14 @@ def describe_timing_etf_cache(index_id='csi1000', adjust=None):
                         item['start_date'] = s.min().strftime('%Y-%m-%d')
                         item['end_date'] = s.max().strftime('%Y-%m-%d')
             except Exception as exc:
+                # describe_timing_etf_cache 是 admin 诊断接口，目的就是把"这个缓存文件能不能读"
+                # 的真实情况完整地塞到返回结构里给运维看；这里故意保留 bare Exception，
+                # 不区分 SchemaError / IOError / UnicodeDecodeError —— 任何读失败都应原样上报，
+                # 不能 raise（会让整张诊断表无法返回）也不需要 fall back（这里不消费数据）。
                 item['read_error'] = repr(exc)
         rows.append(item)
 
-    preferred_runtime_path = None
-    if rows[0]['exists']:
-        preferred_runtime_path = rows[0]['path']
-    elif rows[1]['exists']:
-        preferred_runtime_path = rows[1]['path']
-    elif rows[2]['exists']:
-        preferred_runtime_path = rows[2]['path']
+    preferred_runtime_path = _select_preferred_timing_etf_cache(rows)
 
     return {
         'index_id': index_id,
@@ -377,10 +563,13 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
     legacy_cache_file = _legacy_etf_daily_cache_path(index_id)
     legacy_sub_cache_file = _legacy_etf_daily_cache_path_in_subdir(index_id)
 
-    if not force_refetch and os.path.exists(cache_file):
-        print(f"[index_data] Using preferred ETF cache for {cfg['name']}: {cache_file}")
-        df = pd.read_csv(cache_file, parse_dates=['date'])
-        return df.sort_values('date').reset_index(drop=True)
+    if not force_refetch:
+        cache_info = describe_timing_etf_cache(index_id=index_id, adjust=adjust)
+        preferred_runtime_path = (cache_info or {}).get('preferred_runtime_path')
+        if preferred_runtime_path and os.path.exists(preferred_runtime_path):
+            print(f"[index_data] Using preferred ETF cache for {cfg['name']}: {preferred_runtime_path}")
+            df = pd.read_csv(preferred_runtime_path, parse_dates=['date'])
+            return df.sort_values('date').reset_index(drop=True)
 
     _ensure_cache_dir(CACHE_DIR)
     _ensure_cache_dir(TIMING_ETF_CACHE_DIR)
@@ -389,10 +578,15 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
     try:
         print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line via akshare (adjust={adjust})...")
         df_daily = _fetch_etf_daily_akshare(cfg['code'], adjust=adjust)
-        df_daily.to_csv(cache_file, index=False)
+        atomic_write_csv(cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
+                         produced_by=f"index_data.get_timing_etf_daily:akshare:{cfg['code']}:{adjust}")
         print(f"[index_data] Cached ETF daily K-line to {cache_file} ({len(df_daily)} rows)")
         return df_daily
-    except Exception as ak_err:
+    except (SchemaError, SchemaErrors):
+        # akshare 返回数据脏（应该几乎不会发生）—— 硬失败，绝不静默回退到 Sina 掩盖
+        print(f"[index_data] FATAL akshare ETF data for {cfg['name']} ({cfg['code']}) failed schema validation; refusing fallback")
+        raise
+    except _NETWORK_FETCH_EXCEPTIONS as ak_err:
         logger.warning(
             "[index_data] akshare fetch failed for %s (%s, adjust=%s): %s; falling back to Sina (un-adjusted).",
             cfg['name'], cfg['code'], adjust, ak_err,
@@ -400,20 +594,26 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
         print(f"[index_data] WARN akshare failed for {cfg['name']} ({cfg['code']}): {ak_err}; "
               f"falling back to Sina un-adjusted feed")
 
-    # Fallback 1：Sina 未复权抓取（注意：未复权，分红日会有跳水，仅 best-effort）
+    # Fallback：未复权抓取（Sina → East Money 双线）。注意：未复权数据在分红日会有
+    # 跳水缺口，只在 akshare 不可用时作为 best-effort。
     try:
-        print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line from Sina (fallback)...")
-        df_daily = _fetch_daily_kline(cfg['symbol'])
+        print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line via Sina → East Money fallback (un-adjusted)...")
+        df_daily = _fetch_daily_kline_with_fallback(cfg['symbol'])
         # 不写入 qfq 的 cache_file，避免污染前复权缓存；写到未复权 legacy path 以便复用
-        df_daily.to_csv(legacy_sub_cache_file, index=False)
-        print(f"[index_data] Cached Sina un-adjusted ETF daily K-line to {legacy_sub_cache_file}")
+        atomic_write_csv(legacy_sub_cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
+                         produced_by=f"index_data.get_timing_etf_daily:sina_em_fallback:{cfg['symbol']}")
+        print(f"[index_data] Cached un-adjusted ETF daily K-line to {legacy_sub_cache_file}")
         return df_daily
-    except Exception as sina_err:
+    except (SchemaError, SchemaErrors):
+        # 上游数据脏 —— 硬失败，绝不回到磁盘上不知道多旧的缓存掩盖问题
+        print(f"[index_data] FATAL Sina/East Money fallback ETF data for {cfg['name']} failed schema validation; refusing disk fallback")
+        raise
+    except _NETWORK_FETCH_EXCEPTIONS as fb_err:
         logger.warning(
-            "[index_data] Sina fallback also failed for %s: %s",
-            cfg['name'], sina_err,
+            "[index_data] Sina/East Money fallback also failed for %s: %s",
+            cfg['name'], fb_err,
         )
-        print(f"[index_data] ERROR Sina fallback failed for {cfg['name']}: {sina_err}")
+        print(f"[index_data] ERROR Sina/East Money fallback failed for {cfg['name']}: {fb_err}")
 
     # Fallback 2：磁盘上任何已有缓存
     for candidate in (cache_file, legacy_sub_cache_file, legacy_cache_file):
@@ -428,6 +628,7 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
 
 
 def refresh_all_timing_etf_daily():
+    sweep_dangling_tmps(CACHE_DIR, recursive=True)
     refreshed = {}
     for index_id in TIMING_ETF_CONFIGS:
         refreshed[index_id] = get_timing_etf_daily(index_id=index_id, force_refetch=True)
@@ -521,11 +722,14 @@ def get_index_returns(index_id='csi1000', force_refetch=False, frequency='monthl
               f"({returns.index.min().strftime('%Y-%m-%d')} to "
               f"{returns.index.max().strftime('%Y-%m-%d')})")
 
-        returns.to_csv(cache_file, header=True)
+        atomic_write_csv(cache_file, returns, header=True,
+                         produced_by=f"index_data.get_index_returns:{index_id}:{frequency}")
         print(f"[index_data] Cached to {cache_file}")
         return returns
 
-    except Exception as e:
+    except (SchemaError, SchemaErrors):
+        raise
+    except _NETWORK_FETCH_EXCEPTIONS as e:
         print(f"[index_data] ERROR fetching {cfg['name']}: {e}")
         if os.path.exists(cache_file):
             print(f"[index_data] Falling back to cached {cfg['name']} data")
@@ -543,6 +747,11 @@ US_INDEX_IDS = {'nasdaq', 'sp500'}
 def build_us_index_panel(force_refetch=False):
     """Build a daily wide panel for US ETF proxies (nasdaq, sp500)."""
     return build_index_panel(index_ids=list(US_INDEX_IDS), force_refetch=force_refetch)
+
+
+def build_commodity_index_panel(force_refetch=False):
+    """Build a daily wide panel for commodity ETFs (gold, etc.)."""
+    return build_index_panel(index_ids=list(COMMODITY_INDEX_IDS), force_refetch=force_refetch)
 
 
 # ═══════════════════════════════════════════════════════════════════

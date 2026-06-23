@@ -108,10 +108,10 @@
     .realism-grid > div { padding:3px 0; }
     .realism-grid strong { color: var(--muted); font-weight:600; }
 
-    /* Chart area */
-    .chart-col-wrap { flex: 1; min-height: 500px; position: relative; padding: 8px 12px 12px; }
+    /* Chart area — fixed height so all three cards' formula sections start at the same Y */
+    .chart-col-wrap { flex: 0 0 520px; height: 520px; position: relative; padding: 8px 12px 12px; }
     .col-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
-    .col-chart-inner { width: 100%; height: 100%; min-height: 480px; }
+    .col-chart-inner { width: 100%; height: 100%; }
 
     /* Footer signal reason */
     .card-footer { padding: 9px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); line-height: 1.5; flex-shrink: 0; }
@@ -182,6 +182,7 @@
       <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
       <a href="/timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">A股择时</a>
       <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;">美股择时</a>
+      <a href="/commodity" class="btn btn-secondary" style="text-decoration:none;">大宗商品</a>
       <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
       <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
     </div>
@@ -613,7 +614,7 @@
   function renderColumn(sid, data, color) {
     if (!data) return;
     const m   = data.metrics || {};
-    const lat = data.signal_summary || {};
+    const lat = data.current_signal || data.signal_summary || {};
     const pos = data.position_snapshot || {};
     const ts  = data.trade_summary || {};
     const etf = data.etf_summary || {};
@@ -784,7 +785,12 @@
       },
       legend: {
         top: 0,
-        right: 10,
+        left: 0,
+        right: 0,
+        height: 22,          // 固定高度防止换行导致三图高度不一
+        itemWidth: 12,
+        itemHeight: 10,
+        itemGap: 10,
         data: [
           { name: 'ETF真实价格' },
           { name: '持仓水位' },
@@ -792,10 +798,10 @@
           { name: '买入' },
           { name: '卖出' },
         ],
-        textStyle: { fontSize: 11 },
+        textStyle: { fontSize: 10.5 },
       },
       grid: [
-        { left: 58, right: 12, top: 28, height: '34%' },
+        { left: 58, right: 12, top: 26, height: '34%' },
         { left: 58, right: 12, top: '40%', height: '14%' },
         { left: 58, right: 12, top: '59%', height: '28%' },
       ],
@@ -882,64 +888,165 @@
     `).join('');
   }
 
+  function showProfileDetail(btn) {
+    const profile = JSON.parse(decodeURIComponent(btn.getAttribute('data-profile')));
+    const sid = btn.getAttribute('data-sid');
+    const tuned = profile.tuned_params || {};
+    const wm = profile.window_metrics || {};
+    const score = profile.score != null ? Number(profile.score).toFixed(4) : '—';
+    const mddTh = profile.maxdd_threshold != null ? (Number(profile.maxdd_threshold)*100).toFixed(0)+'%' : '—';
+
+    const td = 'padding:7px 12px;border-bottom:1px solid #e8f0f8;white-space:nowrap;font-size:12.5px;';
+    const th = 'padding:7px 12px;background:#eaf2fb;font-weight:700;white-space:nowrap;text-align:left;font-size:12px;';
+    const tunedRows = Object.keys(tuned).length
+      ? Object.entries(tuned).map(([k,v])=>`<tr><td style="${td}font-family:monospace;color:#555">${k}</td><td style="${td}font-family:monospace;font-weight:700;color:#1d4e89">${v}</td></tr>`).join('')
+      : `<tr><td colspan="2" style="${td}color:var(--muted)">无调参（使用默认）</td></tr>`;
+    function winRow(name, label) {
+      const w = wm[name];
+      if (!w) return `<tr><td style="${td}font-weight:600">${label}</td><td colspan="4" style="${td}color:var(--muted)">无数据</td></tr>`;
+      const calmar = w.calmar != null ? Number(w.calmar).toFixed(3) : '—';
+      const annRaw = w.annual_return != null ? Number(w.annual_return)*100 : null;
+      const mddRaw = w.max_drawdown != null ? Number(w.max_drawdown)*100 : null;
+      const ann = annRaw != null ? `<span style="color:${annRaw>=0?'#00b894':'#d63031'};font-weight:600">${annRaw.toFixed(1)}%</span>` : '—';
+      const mdd = mddRaw != null ? `<span style="color:#e17055;font-weight:600">${mddRaw.toFixed(1)}%</span>` : '—';
+      const exp = w.avg_exposure != null ? (Number(w.avg_exposure)*100).toFixed(0)+'%' : '—';
+      return `<tr><td style="${td}font-weight:700">${label}</td><td style="${td}">${calmar}</td><td style="${td}">${ann}</td><td style="${td}">${mdd}</td><td style="${td}color:var(--muted)">${exp}</td></tr>`;
+    }
+    const overrideTag = profile.manual_override
+      ? `<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;margin-left:8px;">手动覆盖</span>` : '';
+
+    let modal = document.getElementById('profile-detail-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'profile-detail-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;display:flex;align-items:center;justify-content:center;';
+      modal.addEventListener('click', e => { if(e.target===modal) modal.remove(); });
+      document.body.appendChild(modal);
+    }
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:760px;width:90%;max-height:88vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,0.25);font-family:system-ui,sans-serif;">
+        <div style="padding:18px 22px;border-bottom:1px solid #e8f0f8;display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:0;background:#fff;z-index:1;">
+          <div>
+            <div style="font-size:15px;font-weight:800;color:#1d4e89;">Walk-forward 生效 Profile${overrideTag}</div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">${sid} · cutoff: ${profile.training_cutoff||'—'} · 生成于 ${profile.generated_at||'—'}</div>
+          </div>
+          <button onclick="document.getElementById('profile-detail-modal').remove()"
+            style="border:none;background:#f0f0f0;border-radius:6px;padding:6px 12px;font-size:14px;cursor:pointer;color:#555;">✕ 关闭</button>
+        </div>
+        <div style="padding:18px 22px;display:flex;flex-direction:column;gap:18px;">
+          <!-- 评分公式：结构化注释展示 -->
+          <div style="background:#f7fbff;border:1px solid #d6e4f0;border-radius:8px;padding:14px 18px;font-size:12.5px;line-height:1.7;">
+            <div style="font-weight:700;color:#1d4e89;font-size:13px;margin-bottom:12px;">评分公式（ETF 超额优先）</div>
+
+            <!-- Step 1 -->
+            <div style="margin-bottom:10px;">
+              <div style="font-weight:700;color:#333;margin-bottom:4px;">① 单窗口得分</div>
+              <div style="background:#fff;border:1px solid #e0ecf8;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#1d4e89;">
+                window_score(W) = (excess_return &minus; 1.5 &times; max(0, dd_excess)) &times; 100
+              </div>
+              <div style="margin-top:6px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px;color:#555;">
+                <span style="font-family:monospace;color:#0984e3;white-space:nowrap">excess_return</span>
+                <span>策略区间收益率 &minus; 同期 ETF 收益率（百分点）</span>
+                <span style="font-family:monospace;color:#0984e3;white-space:nowrap">dd_excess</span>
+                <span>|策略最大回撤| &minus; |ETF最大回撤|（正值 = 策略回撤更深）</span>
+                <span style="font-family:monospace;color:#0984e3;white-space:nowrap">1.5</span>
+                <span>回撤超额的惩罚系数（跑输 ETF 的回撤以 1.5 倍权重扣分）</span>
+              </div>
+            </div>
+
+            <!-- Step 2 -->
+            <div style="margin-bottom:10px;">
+              <div style="font-weight:700;color:#333;margin-bottom:4px;">② 加权综合得分</div>
+              <div style="background:#fff;border:1px solid #e0ecf8;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#1d4e89;">
+                score = <b style="color:#e17055">0.4</b> &times; ws(近6m) &nbsp;+&nbsp; <b style="color:#fdcb6e">0.3</b> &times; ws(近1y) &nbsp;+&nbsp; <b style="color:#74b9ff">0.3</b> &times; ws(训练区全历史)
+              </div>
+              <div style="margin-top:4px;font-size:12px;color:#888;">近期窗口权重最高（0.4），对近期市场风格更敏感；当前综合分 <b style="color:#1d4e89">${score}</b></div>
+            </div>
+
+            <!-- Step 3：丢弃条件 -->
+            <div>
+              <div style="font-weight:700;color:#333;margin-bottom:4px;">③ 丢弃条件（任一满足即排除该参数组合）</div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;">
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                  <span style="color:#d63031;font-weight:700;flex-shrink:0">×</span>
+                  <span>任意窗口 excess_ret &lt; <b>&minus;5 pp</b>：策略跑输 ETF 超过 5 个百分点</span>
+                </div>
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                  <span style="color:#d63031;font-weight:700;flex-shrink:0">×</span>
+                  <span>任意窗口 dd_excess &gt; <b>+5 pp</b>：策略回撤比 ETF 深超过 5 个百分点</span>
+                </div>
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                  <span style="color:#d63031;font-weight:700;flex-shrink:0">×</span>
+                  <span>训练区全历史 final_nav &lt; <b>${profile.full_nav_floor_ratio||1.00} ×</b> 默认参数净值（全历史不得退步）</span>
+                </div>
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                  <span style="color:#d63031;font-weight:700;flex-shrink:0">×</span>
+                  <span>任意窗口 |maxDD| &gt; <b>${mddTh}</b>（绝对回撤地板，跟 maxDD 硬约束对齐）</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 两栏：调参 + 窗口表现 -->
+          <div style="display:grid;grid-template-columns:1fr 1.7fr;gap:16px;align-items:start;">
+            <div>
+              <div style="font-weight:700;margin-bottom:8px;color:#333;font-size:12.5px;">网格选出的调参</div>
+              <table style="border-collapse:collapse;width:100%;border-radius:6px;overflow:hidden;border:1px solid #e8f0f8;">
+                <thead><tr><th style="${th}">参数</th><th style="${th}">取值</th></tr></thead>
+                <tbody>${tunedRows}</tbody>
+              </table>
+            </div>
+            <div>
+              <div style="font-weight:700;margin-bottom:8px;color:#333;font-size:12.5px;">训练区窗口表现</div>
+              <table style="border-collapse:collapse;width:100%;border-radius:6px;overflow:hidden;border:1px solid #e8f0f8;">
+                <thead><tr>
+                  <th style="${th}">窗口</th>
+                  <th style="${th}">Calmar</th>
+                  <th style="${th}">年化</th>
+                  <th style="${th}">最大回撤</th>
+                  <th style="${th}">平均仓位</th>
+                </tr></thead>
+                <tbody>
+                  ${winRow('recent_6m','近 6 个月')}
+                  ${winRow('recent_1y','近 1 年')}
+                  ${winRow('full_pre_cutoff','训练区全历史')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          ${profile.manual_override ? `<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;font-size:12px;color:#856404;"><b>手动覆盖说明：</b> ${profile.manual_override_reason||'—'}</div>` : ''}
+          <div style="color:#999;font-size:11px;border-top:1px solid #e8f0f8;padding-top:10px;">
+            参数由 <code>scripts/walk_forward_train.py</code> 在 cutoff 之前选定；前端只读，无法修改。Holdout 报告见 <code>strategy/holdout_report_${sid}.md</code>。
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
   function renderBestProfile(sid, profile) {
     const el = document.getElementById(`best-profile-${sid}`);
     if (!el) return;
     if (!profile) { el.innerHTML = ''; return; }
     const tuned = profile.tuned_params || {};
     const wm = profile.window_metrics || {};
-    const tunedRows = Object.keys(tuned).length
-      ? Object.entries(tuned).map(([k,v]) => `<tr><td><code>${k}</code></td><td><code>${v}</code></td></tr>`).join('')
-      : '<tr><td colspan="2" style="color:var(--muted)">—</td></tr>';
-    function winRow(name, label) {
-      const w = wm[name];
-      if (!w) return `<tr><td>${label}</td><td colspan="4" style="color:var(--muted)">无数据</td></tr>`;
-      const calmar = w.calmar != null ? Number(w.calmar).toFixed(3) : '—';
-      const ann = w.annual_return != null ? (Number(w.annual_return)*100).toFixed(2)+'%' : '—';
-      const mdd = w.max_drawdown != null ? (Number(w.max_drawdown)*100).toFixed(2)+'%' : '—';
-      const exp = w.avg_exposure != null ? (Number(w.avg_exposure)*100).toFixed(1)+'%' : '—';
-      return `<tr><td>${label}</td><td>${calmar}</td><td>${ann}</td><td>${mdd}</td><td>${exp}</td></tr>`;
-    }
+    // 把完整 profile 数据序列化，点击详情时再用
+    const profileDataAttr = encodeURIComponent(JSON.stringify(profile));
     const score = profile.score != null ? Number(profile.score).toFixed(4) : '—';
     const mddTh = profile.maxdd_threshold != null ? (Number(profile.maxdd_threshold)*100).toFixed(0)+'%' : '—';
+    const paramsSummary = Object.entries(tuned).map(([k,v])=>`${k}=${v}`).join(' · ') || '无调参';
+    const overrideTag = profile.manual_override
+      ? `<span style="background:#fff3cd;color:#856404;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-left:6px;">手动覆盖</span>` : '';
     el.innerHTML = `
-      <div style="margin:8px 0 12px;padding:10px 12px;border:1px solid #d6e4f0;border-radius:6px;background:#f7fbff;font-size:12px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <div style="font-weight:600;color:#1d4e89;">当前生效 profile（只读，来自 walk-forward）</div>
-          <div style="color:var(--muted);font-size:11px;">训练 cutoff: ${profile.training_cutoff || '—'} · 生成于 ${profile.generated_at || '—'}</div>
+      <div style="margin:8px 0 12px;padding:10px 14px;border:1px solid #d6e4f0;border-radius:8px;background:#f7fbff;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;color:#1d4e89;margin-bottom:2px;">当前生效 profile（只读，来自 walk-forward）${overrideTag}</div>
+          <div style="color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${paramsSummary}</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:1px;">综合分 <b>${score}</b> · maxDD 阈值 ${mddTh} · cutoff: ${profile.training_cutoff||'—'}</div>
         </div>
-        <div style="color:var(--muted);margin-bottom:6px;">
-          评分公式: <code>${profile.score_formula || '—'}</code> · 综合分 <b>${score}</b> · maxDD 阈值 ${mddTh}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:10px;">
-          <div>
-            <div style="font-weight:600;margin-bottom:4px;">网格选出的调参</div>
-            <table style="width:100%;border-collapse:collapse;">
-              <thead><tr style="background:#eaf2fb;"><th style="text-align:left;padding:4px 6px;">参数</th><th style="text-align:left;padding:4px 6px;">取值</th></tr></thead>
-              <tbody>${tunedRows}</tbody>
-            </table>
-          </div>
-          <div>
-            <div style="font-weight:600;margin-bottom:4px;">训练区窗口表现</div>
-            <table style="width:100%;border-collapse:collapse;">
-              <thead><tr style="background:#eaf2fb;">
-                <th style="text-align:left;padding:4px 6px;">窗口</th>
-                <th style="text-align:left;padding:4px 6px;">Calmar</th>
-                <th style="text-align:left;padding:4px 6px;">年化</th>
-                <th style="text-align:left;padding:4px 6px;">最大回撤</th>
-                <th style="text-align:left;padding:4px 6px;">平均仓位</th>
-              </tr></thead>
-              <tbody>
-                ${winRow('recent_6m','近 6m')}
-                ${winRow('recent_1y','近 1y')}
-                ${winRow('full_pre_cutoff','训练区全历史')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div style="margin-top:6px;color:var(--muted);font-size:11px;">
-          说明：以上参数由离线脚本 <code>scripts/walk_forward_train.py</code> 在 cutoff 之前选定；前端只读展示，无法修改。Holdout 报告见 <code>strategy/holdout_report_${sid}.md</code>。
-        </div>
+        <button onclick="showProfileDetail(this)" data-profile="${profileDataAttr}" data-sid="${sid}"
+          style="flex-shrink:0;padding:6px 14px;border:1px solid #0984e3;border-radius:6px;background:white;color:#0984e3;font-size:12px;font-weight:600;cursor:pointer;">
+          查看详情
+        </button>
       </div>
     `;
   }
@@ -1129,6 +1236,21 @@
     }
   }
 
+  async function refreshTimingInfo() {
+    const infoResp = await fetch('/api/timing/info');
+    if (!infoResp.ok) {
+      const e = await infoResp.json().catch(() => ({}));
+      throw new Error(e.error || `HTTP ${infoResp.status}`);
+    }
+    timingInfo = await infoResp.json();
+    if (timingInfo?.data_max_date) {
+      document.getElementById('data-date-badge').textContent = '数据更新至: ' + timingInfo.data_max_date;
+      document.getElementById('start-date').max = timingInfo.data_max_date;
+      document.getElementById('end-date').max   = timingInfo.data_max_date;
+    }
+    return timingInfo;
+  }
+
   /* ── Init ── */
   async function init() {
     showLoading('正在连接服务器...', 5);
@@ -1136,15 +1258,15 @@
       await waitForServerReady();
       showLoading('正在加载策略信息...', 60);
 
-      const [infoResp, listResp, baseInfoResp] = await Promise.all([
-        fetch('/api/timing/info'),
+      const [listResp, baseInfoResp] = await Promise.all([
         fetch('/api/timing/strategy_list'),
         fetch('/api/info'),
       ]);
-      timingInfo   = await infoResp.json();
+      const infoPromise = refreshTimingInfo();
       strategyList = await listResp.json();
       const baseInfo = await baseInfoResp.json();
       if (!Array.isArray(strategyList)) strategyList = [];
+      await infoPromise;
 
       // 训练 cutoff / Holdout 边界
       window.TRAINING_CUTOFF = baseInfo?.training_cutoff || null;
@@ -1152,12 +1274,6 @@
       if (window.TRAINING_CUTOFF) document.getElementById('banner-cutoff').textContent = window.TRAINING_CUTOFF;
       if (window.HOLDOUT_START)   document.getElementById('banner-holdout').textContent = window.HOLDOUT_START;
       updateWindowZoneTag();
-
-      if (timingInfo?.data_max_date) {
-        document.getElementById('data-date-badge').textContent = '数据更新至: ' + timingInfo.data_max_date;
-        document.getElementById('start-date').max = timingInfo.data_max_date;
-        document.getElementById('end-date').max   = timingInfo.data_max_date;
-      }
 
       renderChangeLog();
       buildIndexGrid();
@@ -1183,59 +1299,42 @@
     if (e.target.id === 'trade-detail-modal') closeTradeDetails();
   });
 
-  /* ── 刷新指数数据 ── */
-  let _indexUpdatePoller = null;
-
+  /* ── 刷新指数数据（走共用 DataUpdateFlow：先确认 → 进度条 → 重启提示） ── */
   async function updateIndexData() {
     const btn = document.getElementById('btn-update-index');
     const msg = document.getElementById('index-update-msg');
-
-    btn.disabled = true;
-    btn.textContent = '拉取中...';
-    msg.textContent = '正在启动...';
-
-    try {
-      const resp = await fetch('/api/update_index_data', { method: 'POST' });
-      if (!resp.ok) {
-        const e = await resp.json().catch(() => ({}));
-        throw new Error(e.error || `HTTP ${resp.status}`);
-      }
-    } catch (e) {
-      msg.textContent = '启动失败: ' + e.message;
-      btn.disabled = false;
-      btn.textContent = '↻ 刷新指数/ETF数据';
+    if (!window.DataUpdateFlow) {
+      msg.textContent = '更新模块未加载，请刷新页面';
       return;
     }
-
-    // 开始轮询状态
-    if (_indexUpdatePoller) clearInterval(_indexUpdatePoller);
-    _indexUpdatePoller = setInterval(async () => {
-      try {
-        const resp = await fetch('/api/update_index_data/status');
-        const s = await resp.json();
-        msg.textContent = s.message || '';
-
-        if (s.stage === 'done') {
-          clearInterval(_indexUpdatePoller);
-          _indexUpdatePoller = null;
-          btn.disabled = false;
-          btn.textContent = '↻ 刷新指数/ETF数据';
-          msg.textContent = '✓ 刷新完成，正在重新加载图表...';
-          await runAllBacktests();
-          msg.textContent = '✓ 刷新完成';
-        } else if (s.stage === 'error') {
-          clearInterval(_indexUpdatePoller);
-          _indexUpdatePoller = null;
-          btn.disabled = false;
-          btn.textContent = '↻ 刷新指数/ETF数据';
-          msg.style.color = 'var(--red)';
-          msg.textContent = s.message || '更新失败';
-        }
-      } catch (e) {
-        // 网络抖动，继续轮询
+    btn.disabled = true;
+    btn.textContent = '拉取中...';
+    msg.textContent = '检查数据是否需要更新...';
+    try {
+      const r = await window.DataUpdateFlow.run({
+        type: 'index',
+        onReload: async () => {
+          msg.textContent = '✓ 数据刷新完成，正在同步最新日期并重新加载图表...';
+          await refreshTimingInfo();
+          if (typeof runAllBacktests === 'function') {
+            await runAllBacktests();
+          }
+        },
+      });
+      if (r.aborted && r.reason === 'no_update_needed') {
+        msg.textContent = '数据已最新，未触发刷新';
+      } else if (r.aborted) {
+        msg.style.color = 'var(--red)';
+        msg.textContent = r.detail || '更新已中止';
+      } else {
+        msg.textContent = '✓ 刷新完成';
       }
-    }, 800);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '↻ 刷新指数/ETF数据';
+    }
   }
 </script>
+<script src="/static/js/data_update_flow.js"></script>
 </body>
 </html>

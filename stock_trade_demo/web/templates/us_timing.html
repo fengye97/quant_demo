@@ -105,10 +105,10 @@
     .trade-modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
     .trade-modal-sub { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
-    /* Chart area */
-    .chart-col-wrap { flex: 1; min-height: 500px; position: relative; padding: 8px 12px 12px; }
+    /* Chart area — fixed height keeps both columns' charts equal-height */
+    .chart-col-wrap { height: 620px; flex-shrink: 0; position: relative; padding: 8px 12px 12px; }
     .col-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
-    .col-chart-inner { width: 100%; height: 100%; min-height: 480px; }
+    .col-chart-inner { width: 100%; height: 100%; }
 
     /* Footer */
     .card-footer { padding: 9px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); line-height: 1.5; flex-shrink: 0; }
@@ -179,6 +179,7 @@
       <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
       <a href="/timing" class="btn btn-secondary" style="text-decoration:none;">A股择时</a>
       <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">美股择时</a>
+      <a href="/commodity" class="btn btn-secondary" style="text-decoration:none;">大宗商品</a>
       <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
       <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
     </div>
@@ -276,6 +277,22 @@
   let allData      = {};
   let paramConfigsByStrategy = {};
   let usTimingInfo = null;
+
+  async function refreshUsTimingInfo() {
+    const infoResp = await fetch('/api/us_timing/info');
+    if (!infoResp.ok) {
+      const e = await infoResp.json().catch(() => ({}));
+      throw new Error(e.error || `HTTP ${infoResp.status}`);
+    }
+    usTimingInfo = await infoResp.json();
+    window.usTimingInfo = usTimingInfo;
+    if (usTimingInfo?.data_max_date) {
+      document.getElementById('data-date-badge').textContent = '数据更新至: ' + usTimingInfo.data_max_date;
+      document.getElementById('start-date').max = usTimingInfo.data_max_date;
+      document.getElementById('end-date').max = usTimingInfo.data_max_date;
+    }
+    return usTimingInfo;
+  }
 
   function fmtDelta(v, digits = 2) {
     if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
@@ -493,7 +510,7 @@
   function renderCard(sid, data, color) {
     if (!data) return;
     const m   = data.metrics || {};
-    const lat = data.signal_summary || {};
+    const lat = data.current_signal || data.signal_summary || {};
     const pos = data.position_snapshot || {};
     const ts  = data.trade_summary || {};
     const etf = data.etf_summary || {};
@@ -1062,28 +1079,15 @@
       await waitForServerReady();
       showLoading('正在加载策略信息...', 60);
 
-      const [infoResp, listResp] = await Promise.all([
-        fetch('/api/us_timing/info'),
-        fetch('/api/us_timing/strategy_list'),
-      ]);
-      if (!infoResp.ok) {
-        const e = await infoResp.json().catch(() => ({}));
-        throw new Error(e.error || `HTTP ${infoResp.status}`);
-      }
+      const listResp = await fetch('/api/us_timing/strategy_list');
+      const infoPromise = refreshUsTimingInfo();
       if (!listResp.ok) {
         const e = await listResp.json().catch(() => ({}));
         throw new Error(e.error || `HTTP ${listResp.status}`);
       }
-      usTimingInfo = await infoResp.json();
-      window.usTimingInfo = usTimingInfo;
       strategyList = await listResp.json();
       if (!Array.isArray(strategyList)) strategyList = [];
-
-      if (usTimingInfo?.data_max_date) {
-        document.getElementById('data-date-badge').textContent = '数据更新至: ' + usTimingInfo.data_max_date;
-        document.getElementById('start-date').max = usTimingInfo.data_max_date;
-        document.getElementById('end-date').max = usTimingInfo.data_max_date;
-      }
+      await infoPromise;
 
       renderChangeLog();
       buildIndexGrid();
@@ -1109,58 +1113,42 @@
     if (e.target.id === 'trade-detail-modal') closeTradeDetails();
   });
 
-  /* ── 刷新指数/ETF数据 ── */
-  let _indexUpdatePoller = null;
-
+  /* ── 刷新指数/ETF数据（走共用 DataUpdateFlow） ── */
   async function updateIndexData() {
     const btn = document.getElementById('btn-update-index');
     const msg = document.getElementById('index-update-msg');
-
-    btn.disabled = true;
-    btn.textContent = '拉取中...';
-    msg.textContent = '正在启动...';
-
-    try {
-      const resp = await fetch('/api/update_index_data?type=us', { method: 'POST' });
-      if (!resp.ok) {
-        const e = await resp.json().catch(() => ({}));
-        throw new Error(e.error || `HTTP ${resp.status}`);
-      }
-    } catch (e) {
-      msg.textContent = '启动失败: ' + e.message;
-      btn.disabled = false;
-      btn.textContent = '↻ 刷新指数/ETF数据';
+    if (!window.DataUpdateFlow) {
+      msg.textContent = '更新模块未加载，请刷新页面';
       return;
     }
-
-    if (_indexUpdatePoller) clearInterval(_indexUpdatePoller);
-    _indexUpdatePoller = setInterval(async () => {
-      try {
-        const resp = await fetch('/api/update_index_data/status');
-        const s = await resp.json();
-        msg.textContent = s.message || '';
-
-        if (s.stage === 'done') {
-          clearInterval(_indexUpdatePoller);
-          _indexUpdatePoller = null;
-          btn.disabled = false;
-          btn.textContent = '↻ 刷新指数/ETF数据';
-          msg.textContent = '✓ 刷新完成，正在重新加载图表...';
-          await runAllBacktests();
-          msg.textContent = '✓ 刷新完成';
-        } else if (s.stage === 'error') {
-          clearInterval(_indexUpdatePoller);
-          _indexUpdatePoller = null;
-          btn.disabled = false;
-          btn.textContent = '↻ 刷新指数/ETF数据';
-          msg.style.color = 'var(--red)';
-          msg.textContent = s.message || '更新失败';
-        }
-      } catch (e) {
-        // 网络抖动，继续轮询
+    btn.disabled = true;
+    btn.textContent = '拉取中...';
+    msg.textContent = '检查数据是否需要更新...';
+    try {
+      const r = await window.DataUpdateFlow.run({
+        type: 'index',
+        onReload: async () => {
+          msg.textContent = '✓ 数据刷新完成，正在同步最新日期并重新加载图表...';
+          await refreshUsTimingInfo();
+          if (typeof runAllBacktests === 'function') {
+            await runAllBacktests();
+          }
+        },
+      });
+      if (r.aborted && r.reason === 'no_update_needed') {
+        msg.textContent = '数据已最新，未触发刷新';
+      } else if (r.aborted) {
+        msg.style.color = 'var(--red)';
+        msg.textContent = r.detail || '更新已中止';
+      } else {
+        msg.textContent = '✓ 刷新完成';
       }
-    }, 800);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '↻ 刷新指数/ETF数据';
+    }
   }
 </script>
+<script src="/static/js/data_update_flow.js"></script>
 </body>
 </html>

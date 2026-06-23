@@ -40,6 +40,23 @@ class CSI1000TimingStrategy(BaseTimingStrategy):
     strategy_id = 'csi1000_timing'
     display_name = 'CSI1000 择时策略'
     strategy_description = '基于突破确认、趋势过滤与 MACD 辅助信号判断 CSI1000 的买卖时机。'
+    changelog_meta = {
+        'market_group': 'csi1000',
+        'supersedes': '旧版均线趋势 + 中期动量',
+        'changelog_title': 'CSI1000 生产策略升级为突破确认 + 趋势过滤 + MACD 辅助',
+        'changelog_summary': '当前默认版本不再依赖单一的均线多头排列硬扛回撤，而是改为突破确认入场、跌破防线快速退出，更贴近 CSI1000 的高波动切换节奏。',
+        'changelog_bullets': [
+            '默认核心窗口切换为 breakout / exit / trend = 15 / 7 / 50，用状态机替代旧版趋势+动量开关。',
+            '继续保留 staged 分批建仓，但把风险收缩逻辑前移，重点修复 2026-03 这类高仓位撤退过慢的问题。',
+            '交易语义、ETF next-open 成交、next-close 估值、全历史 replay 后切片等共享规则保持不变。',
+        ],
+        'performance_delta': {
+            'cumulative_return_diff': 0.1951,
+            'annual_return_diff': 7.28,
+            'max_drawdown_improvement': -2.79,
+            'final_capital_diff': 9753.02,
+        },
+    }
 
     def __init__(self, breakout_window=15, exit_window=7, trend_window=50,
                  initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
@@ -463,7 +480,9 @@ class ChiNextTimingStrategy(BaseTimingStrategy):
 
 
 class NasdaqTimingStrategy(BaseTimingStrategy):
+    # 已被 MacroV32TimingStrategy 取代，保留代码做对照实验但不再自动注册到任何 registry
     strategy_id = 'nasdaq_timing'
+    registry = None
     display_name = '纳指ETF 择时策略'
     strategy_description = '基于均线趋势与中期动量判断纳指ETF的买卖时机，适配美股趋势更持久的特点。'
 
@@ -566,8 +585,20 @@ class NasdaqTimingStrategy(BaseTimingStrategy):
 
 class SP500TimingStrategy(BaseTimingStrategy):
     strategy_id = 'sp500_timing'
+    registry = 'us_timing'
     display_name = '标普500ETF 择时策略'
     strategy_description = '基于均线趋势与中期动量判断标普500ETF的买卖时机，标普500波动率低于纳指，适合更长持有周期。'
+    changelog_meta = {
+        'market_group': 'sp500',
+        'supersedes': None,
+        'changelog_title': '标普500ETF 生产参数已做小步提速优化',
+        'changelog_summary': '保留原有均线 + 动量主框架，但把默认生产参数切换为更温和的 staged 仓位与更快的趋势窗口，优先修复近期反弹阶段入场过慢的问题。',
+        'changelog_bullets': [
+            '默认仓位模式从 binary 调整为 staged，降低满进满出带来的来回打脸。',
+            '快/慢均线与动量窗口同步缩短，争取在标普500恢复阶段更早恢复部分仓位。',
+            '仍然通过离线 cache 产物供前端展示，默认页面不在请求路径上实时重算。',
+        ],
+    }
 
     def __init__(self, fast_window=20, slow_window=125, momentum_window=100,
                  initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
@@ -670,12 +701,24 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
     """v3.3 美股宏观多因子择时 — Fed/regime 增强版。"""
 
     strategy_id = 'macro_v32_timing'
+    registry = 'us_timing'
     display_name = '纳指宏观多因子 v3.3 (Macro Regime)'
     strategy_description = (
         '在原有 8 个宏观/市场因子基础上，额外引入 Fed 限制性与政策转向因子，'
         '按 Fed / 宏观 / 市场三块分组聚合得到 ContScore，再叠加危机与偏紧风险 overlay，'
         '通过 sigmoid 映射得到目标仓位。'
     )
+    changelog_meta = {
+        'market_group': 'nasdaq',
+        'supersedes': 'nasdaq_timing',
+        'changelog_title': '纳指ETF 策略升级至宏观多因子 v3.2',
+        'changelog_summary': '从价格趋势/动量二元择时升级为宏观多因子 + Sigmoid 连续仓位模型，默认前台只保留当前收益更高的生产策略。',
+        'changelog_bullets': [
+            '从均线 + 动量二元开关，升级为 8 个宏观/市场因子等权聚合的 ContScore。',
+            '新增 Sigmoid 仓位映射、VIX 危机覆盖和月度惯性阈值，减少高波动区间的大幅回撤。',
+            '继续沿用离线缓存产物，前端只读结果，不在默认页面请求上重算策略。',
+        ],
+    }
 
     def __init__(self, initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
                  exposure_mode='staged', enter_threshold=0.55, add_threshold=0.75,
@@ -988,3 +1031,137 @@ class MacroV32TimingStrategy(BaseTimingStrategy):
         df['reason_summary'] = reasons.map(lambda x: x[0])
         df['reason_detail'] = reasons.map(lambda x: x[1])
         return df
+
+
+class GoldTimingStrategy(BaseTimingStrategy):
+    strategy_id = 'gold_timing'
+    registry = 'commodity'
+    display_name = '黄金择时策略'
+    strategy_description = '基于均线趋势 + MACD 辅助，判断黄金ETF的买卖时机。黄金与股票低相关，受美元/实际利率驱动，适合作为组合分散工具。'
+
+    def __init__(self, trend_window=50, breakout_window=20, exit_window=10,
+                 macd_fast=12, macd_slow=26, macd_signal=9, **params):
+        self.trend_window = int(trend_window)
+        self.breakout_window = int(breakout_window)
+        self.exit_window = int(exit_window)
+        self.macd_fast = int(macd_fast)
+        self.macd_slow = int(macd_slow)
+        self.macd_signal = int(macd_signal)
+        super().__init__(**params)
+
+    def get_index_id(self):
+        return 'gold'
+
+    def get_index_name(self):
+        return '黄金ETF'
+
+    def get_parameter_definitions(self):
+        return [
+            {'key': 'trend_window', 'label': '趋势均线', 'type': 'timing', 'min': 20, 'max': 120, 'step': 1, 'default': self.trend_window, 'unit': '日', 'description': '用于确认中期趋势方向的均线窗口。'},
+            {'key': 'breakout_window', 'label': '突破窗口', 'type': 'timing', 'min': 5, 'max': 60, 'step': 1, 'default': self.breakout_window, 'unit': '日', 'description': '用于判定价格向上突破的历史窗口。'},
+            {'key': 'exit_window', 'label': '退出窗口', 'type': 'timing', 'min': 3, 'max': 30, 'step': 1, 'default': self.exit_window, 'unit': '日', 'description': '用于判定跌破防线的历史窗口。'},
+        ]
+
+    def get_principle_summary(self):
+        return '黄金先看价格是否站上趋势均线并突破近期高点，MACD 金叉辅助确认入场；跌破短期退出位或趋势线时离场。'
+
+    def get_formula_blocks(self):
+        return [
+            {
+                'title': '趋势确认',
+                'expression': 'trend_ok_t = (close_t > trendMA_t)',
+                'explanation': '价格位于趋势均线上方，确认中期上升趋势。',
+            },
+            {
+                'title': '突破入场',
+                'expression': 'buy_breakout_t = (close_t > breakoutHigh_t) ∧ (close_t > trendMA_t)',
+                'explanation': '价格向上突破过去N日高点且趋势完好时，允许建仓。',
+            },
+            {
+                'title': 'MACD 辅助入场',
+                'expression': 'macd_cross_t = (MACD_t > Signal_t) ∧ (MACD_{t-1} ≤ Signal_{t-1})',
+                'explanation': 'MACD 金叉且趋势未坏时，即使未创新高也允许试探入场。',
+            },
+            {
+                'title': '退出条件',
+                'expression': 'sell_t = (close_t < exitLow_t) ∨ (close_t < trendMA_t)',
+                'explanation': '跌破短期退出位或趋势线时离场，避免回撤扩大。',
+            },
+        ]
+
+    def compute_indicators(self, df):
+        index_id = self.get_index_id()
+        close_col = f'{index_id}_close'
+        high_col = f'{index_id}_high'
+        low_col = f'{index_id}_low'
+        if close_col not in df.columns:
+            df[close_col] = df['close'] if 'close' in df.columns else 0.0
+        df['close'] = df[close_col]
+        df['high'] = df[high_col] if high_col in df.columns else df['close']
+        df['low'] = df[low_col] if low_col in df.columns else df['close']
+        close = df['close'].astype(float)
+        df['trend_ma'] = close.rolling(window=self.trend_window, min_periods=1).mean()
+        df['breakout_high'] = close.rolling(window=self.breakout_window, min_periods=1).max()
+        df['exit_low'] = close.rolling(window=self.exit_window, min_periods=1).min()
+        macd_line, signal_line = _calc_macd(close, self.macd_fast, self.macd_slow, self.macd_signal)
+        df['macd_line'] = macd_line
+        df['macd_signal'] = signal_line
+        df['macd_hist'] = macd_line - signal_line
+        return df
+
+    def generate_signals(self, df):
+        df = df.copy()
+        close = df['close']
+        buy_breakout = (close > df['breakout_high']) & (close > df['trend_ma'])
+        macd_cross = (
+            (df['macd_line'] > df['macd_signal']) &
+            (df['macd_line'].shift(1) <= df['macd_signal'].shift(1)) &
+            (close > df['trend_ma'])
+        )
+        buy_cond = buy_breakout | macd_cross
+        sell_cond = (close < df['exit_low']) | (close < df['trend_ma'])
+
+        pos = np.zeros(len(df), dtype=int)
+        cur = 0
+        for i in range(len(df)):
+            bc = bool(buy_cond.iloc[i]) if pd.notna(buy_cond.iloc[i]) else False
+            sc = bool(sell_cond.iloc[i]) if pd.notna(sell_cond.iloc[i]) else False
+            if cur == 0 and bc:
+                cur = 1
+            elif cur == 1 and sc:
+                cur = 0
+            pos[i] = cur
+
+        raw_score = (
+            ((close / df['breakout_high']) - 1).replace([np.inf, -np.inf], 0).fillna(0) * 10 +
+            ((close / df['trend_ma']) - 1).fillna(0) * 8 +
+            (df['macd_line'] - df['macd_signal']).fillna(0) * 4
+        )
+        df['signal_score'] = raw_score / 3
+        df['strength_score'] = _normalize_score(raw_score)
+        ready_mask = df[['breakout_high', 'exit_low', 'trend_ma', 'macd_line', 'macd_signal']].notna().all(axis=1)
+        df = self._apply_exposure_columns(df, pd.Series(pos, index=df.index), staged_strength=df['strength_score'], ready_mask=ready_mask, price_series=df['close'])
+        df['index_id'] = self.get_index_id()
+        df['index_name'] = self.get_index_name()
+        reasons = df.apply(self.build_signal_reason, axis=1)
+        df['reason_summary'] = reasons.map(lambda x: x[0])
+        df['reason_detail'] = reasons.map(lambda x: x[1])
+        return df
+
+    def build_signal_reason(self, row):
+        target = float(row.get('target_exposure', 0) or 0)
+        close_val = float(row['close'])
+        trend_ma = float(row['trend_ma'])
+        if target >= 0.5:
+            reason = '黄金突破确认，站上趋势线，MACD 金叉辅助，建议持仓。'
+            detail = f'close={close_val:.2f}, trend_ma={trend_ma:.2f}, target={target:.0%}'
+        elif target > 0:
+            reason = '黄金趋势偏多但强度不足，小仓位试探持有。'
+            detail = f'close={close_val:.2f}, trend_ma={trend_ma:.2f}, target={target:.0%}'
+        elif close_val > trend_ma:
+            reason = '黄金站上趋势线但信号未触发，等待突破确认。'
+            detail = f'close={close_val:.2f}, trend_ma={trend_ma:.2f}'
+        else:
+            reason = '黄金位于趋势线下方，等待重新站上趋势线再入场。'
+            detail = f'close={close_val:.2f}, trend_ma={trend_ma:.2f}'
+        return reason, detail

@@ -474,6 +474,7 @@
     <div style="display:flex; gap:8px;">
       <button class="btn btn-secondary" onclick="window.location.href='/timing'">A股择时</button>
       <button class="btn btn-secondary" onclick="window.location.href='/us_timing'">美股择时</button>
+      <button class="btn btn-secondary" onclick="window.location.href='/commodity'">大宗商品</button>
       <button class="btn btn-secondary" onclick="window.location.href='/live'">实盘记录</button>
       <button class="btn btn-secondary" id="update-data-btn" onclick="triggerDataUpdate()">更新数据</button>
       <button class="btn btn-secondary" onclick="resetAll()">重置参数</button>
@@ -586,8 +587,8 @@
       </div>
     </div>
     <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
-      <div id="sector-heat-chart" style="flex:1;min-width:520px;height:480px;"></div>
-      <div id="sector-heat-ranking" style="min-width:180px;max-height:480px;overflow-y:auto;"></div>
+      <div id="sector-heat-chart" style="flex:1;min-width:560px;height:620px;"></div>
+      <div id="sector-heat-ranking" style="display:grid;grid-template-columns:repeat(2, minmax(210px, 1fr));gap:14px;min-width:440px;max-height:620px;overflow-y:auto;"></div>
     </div>
   </div>
 
@@ -721,6 +722,23 @@ let strategyList = [];
 let dataInfo = null;  // { data_min_date, data_max_date }
 let selectedQuickPeriod = null;
 let backtestRequestSeq = 0;
+
+// ── sessionStorage helpers: 同一浏览器 tab 内切页回来秒开 ─────────────────────
+function ssGet(key) {
+  try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) { return null; }
+}
+function ssSet(key, value) {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
+}
+function buildCacheVersion() {
+  return (dataInfo?.data_max_date || 'no-date') + '|' + (window.HOLDOUT_START || '') + '|' + (window.TRAINING_CUTOFF || '');
+}
+function buildBacktestCacheKey(params) {
+  return `index:backtest:compact:v1:${buildCacheVersion()}:${params}`;
+}
+function buildSimpleCacheKey(name, extra='') {
+  return `index:${name}:v1:${buildCacheVersion()}:${extra}`;
+}
 function applyChartOption(chartId, option) {
   const chart = charts[chartId];
   if (!chart) return;
@@ -732,9 +750,16 @@ function applyChartOption(chartId, option) {
 }
 
 async function fetchDataInfo() {
+  const cached = ssGet(buildSimpleCacheKey('info'));
+  if (cached) {
+    dataInfo = cached;
+    window.TRAINING_CUTOFF = dataInfo?.training_cutoff || null;
+    window.HOLDOUT_START   = dataInfo?.holdout_start   || null;
+  }
   try {
     const resp = await fetch('/api/info');
     dataInfo = await resp.json();
+    ssSet(buildSimpleCacheKey('info'), dataInfo);
     window.TRAINING_CUTOFF = dataInfo?.training_cutoff || null;
     window.HOLDOUT_START   = dataInfo?.holdout_start   || null;
     const banner = document.getElementById('training-banner-index');
@@ -858,15 +883,19 @@ async function init() {
 
   stopLoadingTimer();
   hideLoading();
-  // Non-blocking: load single-factor backtest and sector heat after main init
-  loadFactorBacktest(false);
-  loadSectorHeat();
+  // 延后加载：首屏先可交互，单因子与行业热度放到 idle 再拉
+  const defer = window.requestIdleCallback || ((fn) => setTimeout(fn, 300));
+  defer(() => loadFactorBacktest(false));
+  defer(() => loadSectorHeat());
 }
 
 async function loadStrategyList() {
+  const cached = ssGet(buildSimpleCacheKey('strategy_list'));
+  if (cached) strategyList = cached;
   try {
     const resp = await fetch('/api/strategy_list');
     strategyList = await resp.json();
+    ssSet(buildSimpleCacheKey('strategy_list'), strategyList);
     const select = document.getElementById('strategy-select');
     if (!select) return;
     select.innerHTML = (strategyList || []).map(item => `
@@ -887,6 +916,16 @@ async function loadStrategyList() {
 
 async function onStrategyChange() {
   const strategy = document.getElementById('strategy-select').value;
+  const fKey = buildSimpleCacheKey('factors', strategy);
+  const oKey = buildSimpleCacheKey('factor_overview', strategy);
+  const cachedFactors = ssGet(fKey);
+  const cachedOverview = ssGet(oKey);
+  if (cachedFactors && cachedOverview) {
+    factorConfig = cachedFactors;
+    factorOverview = cachedOverview;
+    renderFactorPanel();
+    renderFactorOverview();
+  }
   try {
     const [factorResp, overviewResp] = await Promise.all([
       fetch(`/api/factors?strategy=${strategy}`),
@@ -894,6 +933,8 @@ async function onStrategyChange() {
     ]);
     factorConfig = await factorResp.json();
     factorOverview = await overviewResp.json();
+    ssSet(fKey, factorConfig);
+    ssSet(oKey, factorOverview);
     renderFactorPanel();
     renderFactorOverview();
   } catch(e) { console.error(e); }
@@ -930,7 +971,7 @@ function quickPeriod(period) {
   runBacktest();
 }
 
-async function runBacktest() {
+async function runBacktest({ forceFull = false } = {}) {
   const requestId = ++backtestRequestSeq;
   // Only show loading for user-triggered re-runs (not init)
   if (backtestData) showLoading('正在运行回测...', null);
@@ -947,6 +988,18 @@ async function runBacktest() {
   document.querySelectorAll('.factor-slider').forEach(s => {
     params += `&${s.dataset.key}=${s.value}`;
   });
+  const compact = forceFull ? 0 : 1;
+  params += `&compact=${compact}`;
+  const cacheKey = buildBacktestCacheKey(params);
+
+  // 先用 sessionStorage 秒开
+  if (!forceFull) {
+    const cached = ssGet(cacheKey);
+    if (cached) {
+      backtestData = cached;
+      renderAll();
+    }
+  }
 
   try {
     const resp = await fetch(`/api/backtest?${params}`);
@@ -954,6 +1007,7 @@ async function runBacktest() {
     const payload = await resp.json();
     if (requestId !== backtestRequestSeq) return;
     backtestData = payload;
+    if (!forceFull) ssSet(cacheKey, payload);
     renderAll();
   } catch(e) {
     if (requestId !== backtestRequestSeq) return;
@@ -1106,19 +1160,30 @@ function buildEquityChart(containerId, curveMonthly, curveDaily, curveQuarterly,
   applyChartOption(containerId, option);
 }
 
-function renderResolutionButtons(containerId, chartId, curve) {
+function renderResolutionButtons(containerId, chartId, curveMonthly, curveDaily, curveQuarterly, curveYearly) {
   const el = document.getElementById(containerId);
   if (!el) return;
   const presets = [
-    { label: '日线', res: 'day' },
-    { label: '月线', res: 'month' },
-    { label: '季线', res: 'quarter' },
-    { label: '年线', res: 'year' },
+    { label: '日线', res: 'day', data: curveDaily },
+    { label: '月线', res: 'month', data: curveMonthly },
+    { label: '季线', res: 'quarter', data: curveQuarterly },
+    { label: '年线', res: 'year', data: curveYearly },
   ];
+
+  // 默认分辨率：如果月线只有 1 个点，但日线有多点，默认切到日线
+  if (!chartResolution[chartId]) {
+    if ((curveMonthly || []).length <= 1 && (curveDaily || []).length > 1) chartResolution[chartId] = 'day';
+    else chartResolution[chartId] = 'month';
+  }
   const active = chartResolution[chartId] || 'month';
-  el.innerHTML = presets.map(p =>
-    `<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;${p.res === active ? 'background:var(--accent);color:#fff;' : ''}" onclick="chartResolution['${chartId}']='${p.res}';renderAll()">${p.label}</button>`
-  ).join('');
+
+  el.innerHTML = presets.map(p => {
+    const enabled = Array.isArray(p.data) && p.data.length > 0;
+    const activeStyle = p.res === active ? 'background:var(--accent);color:#fff;' : '';
+    const disabledStyle = !enabled ? 'opacity:.45;cursor:not-allowed;' : '';
+    const onclick = enabled ? `chartResolution['${chartId}']='${p.res}';renderAll()` : 'return false';
+    return `<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;${activeStyle}${disabledStyle}" onclick="${onclick}">${p.label}</button>`;
+  }).join('');
 }
 
 
@@ -1157,7 +1222,7 @@ function renderOverview() {
   const curveYearly = backtestData.equity_curve_yearly || [];
   buildEquityChart('chart-overview', curveMonthly, curveDaily, curveQuarterly, curveYearly,
                    backtestData.benchmark_curves || [], undefined);
-  renderResolutionButtons('overview-zoom-btns', 'chart-overview', curveMonthly);
+  renderResolutionButtons('overview-zoom-btns', 'chart-overview', curveMonthly, curveDaily, curveQuarterly, curveYearly);
 
   // 跑赢/跑输大盘指标 — 使用后端预计算的超额收益
   updateOverviewBenchmark(backtestData.benchmark_curves || []);
@@ -1226,7 +1291,7 @@ function renderTrainSection() {
     type: 'log', name: '累积净值 (log)',
     axisLabel: { formatter: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(0) },
   });
-  renderResolutionButtons('train-zoom-btns', 'chart-train', curveMonthly);
+  renderResolutionButtons('train-zoom-btns', 'chart-train', curveMonthly, curveDaily, curveQuarterly, curveYearly);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1328,7 +1393,7 @@ function renderTestSection() {
     series: series,
   };
   applyChartOption('chart-test', option);
-  renderResolutionButtons('test-zoom-btns', 'chart-test', curveMonthly);
+  renderResolutionButtons('test-zoom-btns', 'chart-test', curveMonthly, curveDaily, curveQuarterly, curveYearly);
 }
 
 function formatCurrency(value) {
@@ -1402,11 +1467,22 @@ function renderMetricsRow(containerId, data) {
   }
   // 如果有 Beta/Alpha 归因指标，追加显示
   if (m.beta !== undefined) {
+    // Beta/Alpha/信息比率/R² 需要 ≥2 个月数据才能做回归；数据不足时显示 — 而非 N/A
+    const _insufficientTip = ' （当前月份数不足，无法计算）';
+    const _beta = normalizeMetricValue(m.beta, '—');
+    const _alpha = m.annual_alpha != null && String(m.annual_alpha).toLowerCase() !== 'n/a'
+      ? formatMetricPercentText(m.annual_alpha) : '—';
+    const _ir = normalizeMetricValue(m.information_ratio, '—');
+    const _r2 = normalizeMetricValue(m.r_squared, '—');
     cards.push(
-      { label: 'Beta', value: normalizeMetricValue(m.beta), tooltip: '策略对基准的回归斜率：1 = 与基准同步；>1 高弹性；<1 防御型；负值 = 反向' },
-      { label: '年化Alpha', value: formatMetricPercentText(m.annual_alpha), tooltip: '扣除 Beta × 基准收益后的超额年化收益，越正越好' },
-      { label: '信息比率', value: normalizeMetricValue(m.information_ratio), tooltip: 'Alpha / 残差波动率，>0.5 良好、>1 优秀' },
-      { label: 'R²', value: normalizeMetricValue(m.r_squared), tooltip: '策略收益被基准解释的比例（0-1）；越低说明独立性越强' },
+      { label: 'Beta', value: _beta,
+        tooltip: (_beta === '—' ? '需要至少 2 个月数据方可计算' + _insufficientTip : '策略对基准的回归斜率：1 = 与基准同步；>1 高弹性；<1 防御型；负值 = 反向') },
+      { label: '年化Alpha', value: _alpha,
+        tooltip: (_alpha === '—' ? '需要至少 2 个月数据方可计算' + _insufficientTip : '扣除 Beta × 基准收益后的超额年化收益，越正越好') },
+      { label: '信息比率', value: _ir,
+        tooltip: (_ir === '—' ? '需要至少 2 个月数据方可计算' + _insufficientTip : 'Alpha / 残差波动率，>0.5 良好、>1 优秀') },
+      { label: 'R²', value: _r2,
+        tooltip: (_r2 === '—' ? '需要至少 2 个月数据方可计算' + _insufficientTip : '策略收益被基准解释的比例（0-1）；越低说明独立性越强') },
       { label: '上行捕获', value: normalizeMetricValue(m.up_capture, '—'), tooltip: '基准上涨月份本策略平均涨幅 / 基准平均涨幅，>100% 说明策略在牛市跑得更猛' },
       { label: '下行捕获', value: normalizeMetricValue(m.down_capture, '—'), tooltip: '基准下跌月份本策略平均跌幅 / 基准平均跌幅，负值 = 基准跌时本策略反而涨，越负越好' },
     );
@@ -1423,7 +1499,14 @@ function renderMetricsRow(containerId, data) {
 // ═══════════════════════════════════════════════════════════════
 // Holdings Modal
 // ═══════════════════════════════════════════════════════════════
-function showHoldings(source = 'auto') {
+async function showHoldings(source = 'auto') {
+  // compact=1 首屏不带 holdings，点击时再按需拉 full payload
+  if (backtestData && (!backtestData.holdings || backtestData.holdings.length === 0) &&
+      !(backtestData.holdings_context && backtestData.holdings_context.holdings && backtestData.holdings_context.holdings.length > 0) &&
+      !(backtestData.interval_windows?.recent_6m?.holdings && backtestData.interval_windows.recent_6m.holdings.length > 0)) {
+    await runBacktest({ forceFull: true });
+  }
+
   const holdingsContext = backtestData?.holdings_context;
   const recentWindow = backtestData?.interval_windows?.recent_6m;
   let holdings, title;
@@ -1485,7 +1568,7 @@ function showHoldings(source = 'auto') {
         const pnlColor = displayPnl >= 0 ? 'var(--green)' : 'var(--red)';
         const latestPriceDisplay = s.latest_price != null
           ? s.latest_price.toFixed(2)
-          : '<span style="color:var(--text-secondary);">暂无</span>';
+          : '<span style="color:#e17055;font-size:11.5px;font-weight:600;">停牌</span>';
         const positionValueDisplay = s.position_market_value != null
           ? formatCurrency(s.position_market_value)
           : '<span style="color:var(--text-secondary);">—</span>';
@@ -1986,76 +2069,30 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
 </div>
 
+<script src="/static/js/data_update_flow.js"></script>
 <script>
-let _updatePollTimer = null;
-
 async function triggerDataUpdate() {
   const btn = document.getElementById('update-data-btn');
+  if (!window.DataUpdateFlow) {
+    alert('数据更新模块未加载，请刷新页面');
+    return;
+  }
   btn.disabled = true;
   btn.textContent = '更新中...';
-
-  document.getElementById('update-modal').classList.remove('hidden');
-  document.getElementById('update-close-btn').classList.add('hidden');
-  document.getElementById('update-progress-fill').style.width = '0%';
-  document.getElementById('update-message').textContent = '正在启动数据更新...';
-  document.getElementById('update-stage').textContent = '';
-
   try {
-    const resp = await fetch('/api/update_data', {method: 'POST'});
-    const data = await resp.json();
-    if (!resp.ok) {
-      document.getElementById('update-message').textContent = data.error || '启动失败';
-      document.getElementById('update-close-btn').classList.remove('hidden');
-      btn.disabled = false;
-      btn.textContent = '更新数据';
-      return;
-    }
-    _updatePollTimer = setInterval(pollUpdateStatus, 2000);
-  } catch(e) {
-    document.getElementById('update-message').textContent = '请求失败: ' + e.message;
-    document.getElementById('update-close-btn').classList.remove('hidden');
+    // 串跑 4 步：先指数/ETF（拿最新日线），再辅助（FRED+A股估值+风险信号），
+    // 接着 stock（A股 supplement 末尾会用最新 ETF rebuild timing cache，所以必须在 factor 之前跑），
+    // 最后 factor（行业周度热度，读 stock supplement 后的最新 parquet 才不丢最近一月）
+    await window.DataUpdateFlow.runChained({
+      types: ['index', 'aux', 'stock', 'factor'],
+      onReload: async () => {
+        await fetchDataInfo();
+        await runBacktest();
+      },
+    });
+  } finally {
     btn.disabled = false;
     btn.textContent = '更新数据';
-  }
-}
-
-async function pollUpdateStatus() {
-  try {
-    const resp = await fetch('/api/update_data/status');
-    const data = await resp.json();
-
-    document.getElementById('update-progress-fill').style.width = data.progress_pct + '%';
-    document.getElementById('update-message').textContent = data.message || '';
-
-    const stageLabels = {
-      'cleaning': '阶段 1/4: 清理旧数据',
-      'fetching': '阶段 2/4: 拉取网络数据',
-      'rebuilding_cache': '阶段 3/4: 重建回测缓存',
-      'done': '完成',
-      'error': '出错',
-    };
-    document.getElementById('update-stage').textContent = stageLabels[data.stage] || '';
-
-    if (data.stage === 'done') {
-      clearInterval(_updatePollTimer);
-      document.getElementById('update-close-btn').classList.remove('hidden');
-      document.getElementById('update-progress-fill').style.background = 'var(--green)';
-      const btn = document.getElementById('update-data-btn');
-      btn.disabled = false;
-      btn.textContent = '更新数据';
-      // 刷新页面数据
-      await fetchDataInfo();
-      await runBacktest();
-    } else if (data.stage === 'error') {
-      clearInterval(_updatePollTimer);
-      document.getElementById('update-close-btn').classList.remove('hidden');
-      document.getElementById('update-progress-fill').style.background = 'var(--red)';
-      const btn = document.getElementById('update-data-btn');
-      btn.disabled = false;
-      btn.textContent = '更新数据';
-    }
-  } catch(e) {
-    // 网络错误，继续轮询
   }
 }
 
@@ -2190,7 +2227,31 @@ async function loadSectorHeat() {
     const data = await resp.json();
     if (data.error) { console.warn('sector_heat:', data.error); return; }
     renderSectorHeatChart(data);
-    renderSectorHeatRanking(data.latest_ranking || []);
+    const _heatData = data.data || [];
+    const _industries = data.industries || [];
+    const _latestWeekIdx = _heatData.length ? Math.max(..._heatData.map(d => d[0])) : -1;
+
+    // 榜单 A：最新一周涨跌幅
+    const _latestRetMap = {};
+    _heatData.forEach(d => { if (d[0] === _latestWeekIdx) _latestRetMap[_industries[d[1]]] = d[2]; });
+    const _rankingByLatest = Object.entries(_latestRetMap)
+      .map(([industry, ret]) => ({ industry, latest_ret: ret }))
+      .sort((a, b) => b.latest_ret - a.latest_ret);
+
+    // 榜单 B：近一个月（最近 4 周）累计涨跌幅
+    const _monthRetMap = {};
+    _heatData.forEach(d => {
+      const weekIdx = d[0];
+      if (weekIdx >= _latestWeekIdx - 3) {
+        const name = _industries[d[1]];
+        _monthRetMap[name] = (_monthRetMap[name] || 0) + d[2];
+      }
+    });
+    const _rankingByMonth = Object.entries(_monthRetMap)
+      .map(([industry, ret]) => ({ industry, month_ret: ret }))
+      .sort((a, b) => b.month_ret - a.month_ret);
+
+    renderSectorHeatRanking({ latest: _rankingByLatest, month: _rankingByMonth });
   } catch(e) {
     console.warn('sector_heat 加载失败:', e);
   }
@@ -2205,36 +2266,74 @@ function renderSectorHeatChart(data) {
   }
 
   const weeks = data.weeks || [];
-  const industries = data.industries || [];
-  const heatData = data.data || [];
+  const weeksPartial = data.weeks_partial || weeks.map(() => false);
+  const weeksNDays = data.weeks_n_days || weeks.map(() => 5);
+  const rawIndustries = data.industries || [];
+  const rawHeatData = data.data || [];
+
+  // 行业顺序：按“最新一周”收益降序排列（与右侧排名一致）
+  const latestWeekIdx = rawHeatData.length ? Math.max(...rawHeatData.map(d => d[0])) : -1;
+  const latestRetMap = {};
+  rawHeatData.forEach(d => {
+    if (d[0] === latestWeekIdx) latestRetMap[rawIndustries[d[1]]] = d[2];
+  });
+  const industries = [...rawIndustries].sort((a, b) => {
+    const av = latestRetMap[a] ?? -Infinity;
+    const bv = latestRetMap[b] ?? -Infinity;
+    return bv - av;
+  });
+  const industryIndexMap = Object.fromEntries(industries.map((name, idx) => [name, idx]));
+  const heatData = rawHeatData.map(([weekIdx, industryIdx, value]) => {
+    const name = rawIndustries[industryIdx];
+    return [weekIdx, industryIndexMap[name], value];
+  });
 
   // 对称颜色轴：最大绝对值作为边界
   const vals = heatData.map(d => d[2]);
   const maxAbs = Math.max(Math.abs(Math.min(...vals)), Math.abs(Math.max(...vals)), 1);
+
+  // x 轴标签：partial 周追加 (进行中)
+  const xLabels = weeks.map((w, i) => weeksPartial[i] ? `${w} (进行中)` : w);
 
   _sectorHeatChart.setOption({
     backgroundColor: '#fff',
     tooltip: {
       position: 'top',
       formatter: p => {
-        const w = weeks[p.data[0]] || '';
+        const i = p.data[0];
+        const w = weeks[i] || '';
         const ind = industries[p.data[1]] || '';
         const v = p.data[2];
         const color = v >= 0 ? '#00b894' : '#d63031';
-        return `<b>${ind}</b><br/>${w}<br/><span style="color:${color};font-weight:700;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+        const partialNote = weeksPartial[i]
+          ? `<br/><span style="color:#fdcb6e;font-size:11px;">⚠ 当周进行中，仅 ${weeksNDays[i]} 个交易日</span>`
+          : '';
+        return `<b>${ind}</b><br/>${w}<br/><span style="color:${color};font-weight:700;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>${partialNote}`;
       },
     },
-    grid: { top: 10, bottom: 60, left: 80, right: 60 },
+    grid: { top: 10, bottom: 60, left: 110, right: 60 },
     xAxis: {
       type: 'category',
-      data: weeks,
-      axisLabel: { fontSize: 11, rotate: 30 },
+      data: xLabels,
+      axisLabel: {
+        fontSize: 11,
+        rotate: 30,
+        formatter: (v, i) => weeksPartial[i] ? `{partial|${v}}` : v,
+        rich: {
+          partial: { color: '#e17055', fontWeight: 700 },
+        },
+      },
       splitArea: { show: true },
     },
     yAxis: {
       type: 'category',
       data: industries,
-      axisLabel: { fontSize: 11 },
+      axisLabel: {
+        fontSize: 12,
+        interval: 0,     // 强制显示所有行业，不再自动隔行隐藏
+        width: 72,
+        overflow: 'truncate',
+      },
       splitArea: { show: true },
     },
     visualMap: {
@@ -2255,7 +2354,8 @@ function renderSectorHeatChart(data) {
       data: heatData,
       label: {
         show: true,
-        fontSize: 10,
+        fontSize: 10.5,
+        fontWeight: 'bold',
         formatter: p => {
           const v = p.data[2];
           return (v >= 0 ? '+' : '') + v.toFixed(1);
@@ -2269,29 +2369,45 @@ function renderSectorHeatChart(data) {
 
 function renderSectorHeatRanking(ranking) {
   const el = document.getElementById('sector-heat-ranking');
-  if (!el || !ranking.length) return;
+  if (!el) return;
 
-  const maxAbs = Math.max(...ranking.map(r => Math.abs(r.avg_ret_4w)));
+  function renderOne(title, rankingList, keyName, colName) {
+    if (!rankingList || !rankingList.length) return '';
+    const maxAbs = Math.max(...rankingList.map(r => Math.abs(r[keyName])), 0.01);
+    const rows = rankingList.map((r, i) => {
+      const v = r[keyName];
+      const color = v >= 0 ? '#00b894' : '#d63031';
+      const barW = Math.round(Math.abs(v) / maxAbs * 60);
+      return `<tr>
+        <td class="rank-num">${i + 1}</td>
+        <td style="max-width:78px;overflow:hidden;text-overflow:ellipsis;" title="${r.industry}">${r.industry}</td>
+        <td style="color:${color};font-weight:700;font-size:12px;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</td>
+        <td><span class="heat-rank-bar" style="width:${barW}px;background:${color};"></span></td>
+      </tr>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:14px;">
+        <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px;padding:0 4px;">${title}</div>
+        <table class="heat-rank-table">
+          <thead><tr><th>#</th><th>行业</th><th>${colName}</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
 
-  const rows = ranking.map(r => {
-    const v = r.avg_ret_4w;
-    const color = v >= 0 ? '#00b894' : '#d63031';
-    const barW = Math.round(Math.abs(v) / maxAbs * 60);
-    const barColor = v >= 0 ? '#00b894' : '#d63031';
-    return `<tr>
-      <td class="rank-num">${r.rank}</td>
-      <td style="max-width:70px;overflow:hidden;text-overflow:ellipsis;" title="${r.industry}">${r.industry}</td>
-      <td style="color:${color};font-weight:700;font-size:12px;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</td>
-      <td><span class="heat-rank-bar" style="width:${barW}px;background:${barColor};"></span></td>
-    </tr>`;
-  }).join('');
+  // 新结构：{ latest: [...], month: [...] }
+  if (ranking && !Array.isArray(ranking) && (ranking.latest || ranking.month)) {
+    el.innerHTML = `
+      ${renderOne('最新一周涨跌幅排名', ranking.latest || [], 'latest_ret', '最新一周')}
+      ${renderOne('近一个月涨跌幅排名', ranking.month || [], 'month_ret', '近一个月')}
+    `;
+    return;
+  }
 
-  el.innerHTML = `
-    <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px;padding:0 4px;">近4周均值排名</div>
-    <table class="heat-rank-table">
-      <thead><tr><th>#</th><th>行业</th><th>均周收益</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+  // 兼容旧结构（单榜单）
+  if (!ranking || !ranking.length) return;
+  const useLatest = ranking[0] && ranking[0].latest_ret !== undefined;
+  el.innerHTML = renderOne(useLatest ? '最新一周涨跌幅排名' : '近4周均值排名', ranking, useLatest ? 'latest_ret' : 'avg_ret_4w', useLatest ? '最新一周' : '均周收益');
 }
 </script>
 
