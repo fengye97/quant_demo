@@ -236,6 +236,22 @@ def load_data(path=None, columns=None):
     _canonical_date = df.groupby(_ym)['交易日期'].transform('max')
     df = df[df['交易日期'] == _canonical_date].reset_index(drop=True)
 
+    # Invariant：每个 YYYY-MM 只能映射到 1 个 canonical 交易日；期数必须 == 月数。
+    # 这两条 assert 是 eb4d369（同月多行 silent 多次换仓）的回归防线，绝不能去掉。
+    _ym_to_dates = df.groupby(df['交易日期'].dt.to_period('M'))['交易日期'].nunique()
+    if not (_ym_to_dates == 1).all():
+        _bad = _ym_to_dates[_ym_to_dates > 1].to_dict()
+        raise AssertionError(
+            f"load_data() invariant 失败：以下月份有多个 canonical 交易日 {_bad}。"
+            f"dedup 逻辑可能被绕过——禁止继续回测。"
+        )
+    _n_periods = df['交易日期'].nunique()
+    _ym_span = df['交易日期'].dt.to_period('M').nunique()
+    if _n_periods != _ym_span:
+        raise AssertionError(
+            f"load_data() invariant 失败：期数 {_n_periods} 与月数 {_ym_span} 不一致。"
+        )
+
     # ── 全市场等权累积收益 → 市场牛熊划分 ──
     mkt_ret = df.groupby('交易日期')['涨跌幅'].mean()
     mkt_cum = (1 + mkt_ret).cumprod()
@@ -361,66 +377,15 @@ def parse_returns(x):
     return x if isinstance(x, list) else []
 
 
-def apply_take_profit(daily_returns, tp_pct, sell_cost, sl_pct=None):
-    """
-    对单只股票的下周期日收益序列应用止盈规则。
-
-    参数:
-      daily_returns — list[float]，每天的涨跌幅
-      tp_pct        — 止盈阈值（如 0.30 = 30%）
-      sell_cost     — 卖出成本率（手续费+印花税）
-      sl_pct        — 止损阈值（如 -0.20 = -20%），None 表示不启用止损
-
-    返回:
-      (modified_returns, triggered)
-        modified_returns — 考虑止盈后的涨跌幅序列
-        triggered        — 是否触发了止盈
-
-    逻辑：
-      逐日累积。一旦累积收益超过止盈阈值，当日扣除卖出成本后平仓，
-      后续日期收益置零（资金闲置不参与市场波动）。
-      如果到期末未触发止盈，最后一天扣除卖出成本。
-    """
-    cumret = 1.0
-    result = []
-    triggered = False
-    for r in daily_returns:
-        if triggered:
-            result.append(0.0)         # 已平仓，后续不参与
-            continue
-        cumret *= (1 + r)
-        result.append(r)
-        if cumret - 1 > tp_pct:
-            triggered = True
-            result[-1] = result[-1] - sell_cost  # 触发日扣卖出成本
-        elif sl_pct is not None and cumret - 1 < sl_pct:
-            triggered = True
-            result[-1] = result[-1] - sell_cost
-    return result, triggered
-
-
-def build_period_daily_curve(daily_lists, tp_pct, sell_cost, buy_cost, sl_pct=None):
-    """基于单股逐日收益构造单个调仓周期的组合日线。"""
-    period_len = max((len(x) for x in daily_lists if isinstance(x, list)), default=0)
-    if period_len == 0:
-        return [round(float(1 - buy_cost), 6)] if daily_lists else []
-
-    stock_curves = []
-    for daily_ret in daily_lists:
-        if not isinstance(daily_ret, list) or len(daily_ret) == 0:
-            stock_curves.append(np.ones(period_len))
-            continue
-
-        modified, triggered = apply_take_profit(daily_ret, tp_pct, sell_cost, sl_pct=sl_pct)
-        curve = np.cumprod(np.array(modified, dtype=float) + 1.0)
-        if len(curve) > 0 and not triggered:
-            curve[-1] *= (1 - sell_cost)
-        if len(curve) < period_len:
-            curve = np.pad(curve, (0, period_len - len(curve)), constant_values=curve[-1])
-        stock_curves.append(curve)
-
-    portfolio_curve = np.mean(np.vstack(stock_curves), axis=0) * (1 - buy_cost)
-    return [round(float(v), 6) for v in portfolio_curve.tolist()]
+# Pillar 1 Step 7: these were extracted verbatim into ``engine/take_profit.py``
+# so the math is reusable without dragging the whole backtest module along.
+# They are re-exported here for backwards compatibility with every existing
+# call site (compare_strategies / choose_stock / scripts / web_app).
+from engine.take_profit import (  # noqa: E402,F401  (re-export)
+    apply_take_profit,
+    build_period_daily_curve,
+)
+from engine.costs import CommissionModel  # noqa: E402,F401  (re-export)
 
 
 def select_and_backtest(df, strategy, select_stock_num=6,
@@ -473,6 +438,16 @@ def select_and_backtest(df, strategy, select_stock_num=6,
     # 排名选股：因子值越小越好，取前 select_stock_num 只
     df['排名'] = df.groupby('交易日期')['因子'].rank(ascending=True)
     df = df[df['排名'] <= select_stock_num]
+
+    # 月中数据更新时（supplement 写入本月最新日但下月尚未开始），
+    # 当前月 canonical row 的 下周期每天涨跌幅 全为空 —— 该月还未结束，不构成完整持股周期。
+    # 在 groupby 之前统一过滤掉这些 0 期的 canonical date，避免 select_stock 与
+    # period_returns 等 list 出现长度不一致（Length mismatch）错误。
+    _periods_with_returns = df.groupby('交易日期')['下周期每天涨跌幅'].apply(
+        lambda s: any(len(x) > 0 for x in s if isinstance(x, list))
+    )
+    _valid_dates = _periods_with_returns[_periods_with_returns].index
+    df = df[df['交易日期'].isin(_valid_dates)]
 
     # 格式化代码/名称为空格分隔
     df['股票代码'] = df['股票代码'].astype(str) + ' '

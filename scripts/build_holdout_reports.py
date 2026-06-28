@@ -26,6 +26,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
 _DEMO_ROOT = os.path.join(_REPO_ROOT, 'stock_trade_demo')
 sys.path.insert(0, _DEMO_ROOT)
+from utils.atomic_io import atomic_write_text as _atomic_write_text, atomic_writer as _atomic_writer
 
 # 复用 walk_forward_train 中的 spec 与默认 realism
 sys.path.insert(0, _HERE)
@@ -35,6 +36,7 @@ from walk_forward_train import (  # noqa: E402
     TRAINING_CUTOFF,
     _extract_metric_floats,
     _maybe_apply_us_clean_window,
+    _sanitize_nan,
 )
 
 from index_data import build_index_panel, build_us_index_panel  # noqa: E402
@@ -189,8 +191,7 @@ def main():
         holdout_metrics, holdout_rows, holdout_window = _evaluate_holdout(sid, profile, panel)
         md = _render_md(sid, profile, holdout_metrics, holdout_rows, holdout_window)
         out_path = os.path.join(OUTPUT_DIR, f'holdout_report_{sid}.md')
-        with open(out_path, 'w') as f:
-            f.write(md)
+        _atomic_write_text(out_path, md)
         # 同时落结构化 JSON：web /api/*/latest_signal 直接读，不依赖 md 解析
         json_payload = {
             'strategy_id': sid,
@@ -204,8 +205,8 @@ def main():
             'holdout_metrics': holdout_metrics,
         }
         json_path = os.path.join(OUTPUT_DIR, f'holdout_report_{sid}.json')
-        with open(json_path, 'w') as f:
-            json.dump(json_payload, f, ensure_ascii=False, indent=2, default=float)
+        with _atomic_writer(json_path, 'w', encoding='utf-8') as _f:
+            json.dump(_sanitize_nan(json_payload), _f, ensure_ascii=False, indent=2, default=float)
         print(f"  -> {out_path}")
         print(f"  -> {json_path}")
         if holdout_metrics is not None:

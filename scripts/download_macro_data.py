@@ -3,7 +3,10 @@
 数据源: FRED (St. Louis Fed) + Yahoo Finance
 保存路径: /Users/fatcat/Desktop/quant/data/
 """
+import argparse
 import os
+import sys
+import time
 import pandas as pd
 from datetime import datetime
 from pandas_datareader import data as pdr
@@ -49,27 +52,63 @@ TICKERS = {
     "^VIX": "VIX_Index",
 }
 
-def download_fred():
+def _load_existing_fred(name):
+    fp = os.path.join(DATA_DIR, f"fred_{name}.csv")
+    if not os.path.exists(fp):
+        return None
+    try:
+        return pd.read_csv(fp, parse_dates=['DATE']).set_index('DATE')
+    except Exception:
+        return None
+
+
+def download_fred(strict=False):
     print("=" * 60)
     print("下载 FRED 宏观数据")
     print("=" * 60)
     summary = []
+    failures = []
     for code, name in FRED_SERIES.items():
-        try:
-            df = pdr.DataReader(code, "fred", START, END)
-            df.columns = [name]
-            fp = os.path.join(DATA_DIR, f"fred_{name}.csv")
-            df.to_csv(fp)
-            n = len(df)
-            first = df.index.min().strftime("%Y-%m-%d")
-            last  = df.index.max().strftime("%Y-%m-%d")
-            print(f"  ✓ {name:25s} {n:5d} rows  {first} → {last}")
-            summary.append({"name": name, "code": code, "rows": n,
+        fp = os.path.join(DATA_DIR, f"fred_{name}.csv")
+        success = False
+        for attempt in range(3):
+            try:
+                df = pdr.DataReader(code, "fred", START, END)
+                df.columns = [name]
+                df.to_csv(fp)
+                n = len(df)
+                first = df.index.min().strftime("%Y-%m-%d")
+                last  = df.index.max().strftime("%Y-%m-%d")
+                print(f"  ✓ {name:25s} {n:5d} rows  {first} → {last}")
+                summary.append({"name": name, "code": code, "rows": n,
+                                "start": first, "end": last,
+                                "latest_value": float(df.iloc[-1, 0])})
+                success = True
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"  ✗ {name}: {e}")
+                else:
+                    print(f"  … {name}: 第 {attempt + 1} 次失败，1s 后重试 ({e})")
+                    time.sleep(1)
+        if success:
+            continue
+        old = _load_existing_fred(name)
+        if old is not None and len(old) > 0:
+            first = old.index.min().strftime("%Y-%m-%d")
+            last = old.index.max().strftime("%Y-%m-%d")
+            latest_val = old.iloc[-1, 0]
+            latest_val = None if pd.isna(latest_val) else float(latest_val)
+            print(f"  ↺ {name:25s} 保留旧缓存  {first} → {last}")
+            summary.append({"name": name, "code": code, "rows": len(old),
                             "start": first, "end": last,
-                            "latest_value": float(df.iloc[-1, 0])})
-        except Exception as e:
-            print(f"  ✗ {name}: {e}")
+                            "latest_value": latest_val, 'stale_cache_retained': True})
+        else:
+            failures.append(name)
     pd.DataFrame(summary).to_csv(os.path.join(DATA_DIR, "_fred_summary.csv"), index=False)
+    if strict and failures:
+        raise RuntimeError(f"FRED 数据缺失且无旧缓存可保留: {failures}")
+    return failures
 
 def download_yf():
     print("=" * 60)
@@ -101,6 +140,16 @@ def download_yf():
     pd.DataFrame(summary).to_csv(os.path.join(DATA_DIR, "_etf_summary.csv"), index=False)
 
 if __name__ == "__main__":
-    download_fred()
-    download_yf()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--skip-yf', action='store_true', help='只刷新 FRED 宏观，不下载 Yahoo Finance 研究数据')
+    parser.add_argument('--strict-fred', action='store_true', help='若 FRED 某序列抓取失败且本地无旧缓存，则返回非 0')
+    args = parser.parse_args()
+
+    failures = download_fred(strict=args.strict_fred)
+    if failures:
+        print(f"\n[FRED] 以下序列本次抓取失败，但已保留旧缓存: {failures}")
+    if not args.skip_yf:
+        download_yf()
     print("\n全部完成。数据保存于:", DATA_DIR)
+    if args.strict_fred and failures:
+        sys.exit(1)

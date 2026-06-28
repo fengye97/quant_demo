@@ -1,0 +1,7 @@
+{
+  "produced_by": "scripts/walk_forward_train:log:csi1000_timing",
+  "row_count_if_df": 108,
+  "sha256_first_8k": "c6650778123736d98dae00bbda1673cd",
+  "written_at_iso": "2026-05-28T02:30:22.272653+00:00",
+  "written_at_unix": 1779935422.272653
+}

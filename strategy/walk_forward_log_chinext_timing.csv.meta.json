@@ -1,0 +1,7 @@
+{
+  "produced_by": "scripts/walk_forward_train:log:chinext_timing",
+  "row_count_if_df": 243,
+  "sha256_first_8k": "68cacc257c642b961e7bc199934ac7d3",
+  "written_at_iso": "2026-05-28T02:30:37.950120+00:00",
+  "written_at_unix": 1779935437.95012
+}

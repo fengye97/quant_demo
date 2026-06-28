@@ -34,6 +34,10 @@ def _load_monthly_heat():
         return _heat_cache['monthly']
 
     df = pd.read_csv(_HEAT_FILE, encoding='utf-8-sig')
+    # 过滤 partial 周：当月未满 5 个交易日的周仅供 UI 展示，
+    # 不参与策略选股，避免引入半周噪声影响历史回测可比性。
+    if 'is_partial' in df.columns:
+        df = df[~df['is_partial'].astype(bool)].copy()
     # 每个 (year_month, industry) 取该月所有周的平均收益
     monthly = (
         df.groupby(['year_month', 'industry'])['weekly_ret_pct']

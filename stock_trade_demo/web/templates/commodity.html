@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>大宗商品择时 · Gold Timing</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script src="/static/js/data_update_flow.js"></script>
 <style>
 :root {
   --bg: #1a1a1a; --bg-card: #252525; --bg-card-hover: #2a2a2a;
@@ -97,8 +98,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <a href="/">选股</a>
   <a href="/timing">A股择时</a>
   <a href="/us_timing">美股择时</a>
+  <a href="/hk_timing">港股择时</a>
   <a href="/commodity" class="active">大宗商品</a>
   <a href="/live">实盘</a>
+  <span style="flex:1;"></span>
+  <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index" style="font-size:12px;padding:4px 12px;">↻ 刷新数据</button>
+  <span id="index-update-msg" style="font-size:11px;color:var(--text-secondary);"></span>
 </div>
 
 <div id="loading" class="hidden">
@@ -272,8 +277,8 @@ function initChart(sid) {
   if (!data) return;
 
   const curve = data.equity_curve || [];
-  const dates = curve.map(r => r[0]);
-  const navs = curve.map(r => r[1]);
+  const dates = curve.map(d => d.date);
+  const navs = curve.map(d => d.value);
 
   const trainEnd = data.training_cutoff || '2025-11-30';
 
@@ -319,6 +324,20 @@ async function applyParams(sid) {
     hideLoading();
     alert('重跑失败: ' + e.message);
   }
+}
+
+async function updateIndexData() {
+  const btn = document.getElementById('btn-update-index');
+  const msg = document.getElementById('index-update-msg');
+  if (!window.DataUpdateFlow) { msg.textContent = '更新模块未加载'; return; }
+  btn.disabled = true; btn.textContent = '拉取中...'; msg.textContent = '检查数据...';
+  try {
+    const r = await window.DataUpdateFlow.run({ type: 'index',
+      onReload: async () => { msg.textContent = '完成，重新加载...'; location.reload(); }
+    });
+    if (r.aborted) { msg.textContent = r.reason === 'no_update_needed' ? '数据已最新' : r.detail || '更新中止'; }
+    else { msg.textContent = '刷新完成'; }
+  } finally { btn.disabled = false; btn.textContent = '↻ 刷新数据'; }
 }
 
 document.addEventListener('DOMContentLoaded', init);

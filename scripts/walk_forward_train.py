@@ -42,6 +42,7 @@ _DEMO_ROOT = os.path.join(_REPO_ROOT, 'stock_trade_demo')
 sys.path.insert(0, _DEMO_ROOT)
 
 from index_data import build_index_panel, build_us_index_panel, describe_timing_etf_cache  # noqa: E402
+from utils.atomic_io import atomic_write_csv as _atomic_write_csv, atomic_writer as _atomic_writer  # noqa: E402
 from timing.backtest import (  # noqa: E402
     evaluate_timing_result,
     filter_timing_result,
@@ -251,6 +252,23 @@ def _extract_metric_floats(metrics: dict) -> dict:
     out['rebalance_count'] = int(metrics.get('调仓次数', 0))
     out['avg_exposure'] = float(metrics.get('平均仓位', 0.0))
     return out
+
+
+def _sanitize_nan(obj):
+    """递归将 float NaN/Inf 替换为 None，确保 json.dump 输出合法 JSON（RFC 8259）。
+
+    Python json.dump 默认 allow_nan=True，会把 float('nan')/float('inf') 写成字面量
+    NaN/Infinity，这不是合法 JSON，浏览器 JSON.parse 会抛 SyntaxError。
+    此函数在写文件前先做清洗，彻底防止将来复发。
+    """
+    import math
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
 
 
 def _compute_etf_window_metrics(result_df: pd.DataFrame) -> dict | None:
@@ -484,7 +502,8 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log_df = pd.DataFrame(log_rows)
     log_path = os.path.join(OUTPUT_DIR, f'walk_forward_log_{strategy_id}.csv')
-    log_df.sort_values('score', ascending=False).to_csv(log_path, index=False)
+    _atomic_write_csv(log_path, log_df.sort_values('score', ascending=False), index=False,
+                      produced_by=f"scripts/walk_forward_train:log:{strategy_id}")
     print(f"  全网格日志 -> {log_path}", flush=True)
 
     fallback_used = False
@@ -545,8 +564,9 @@ def _run_for_strategy(strategy_id: str, panel_pre_cutoff: pd.DataFrame,
         'grid_size': len(grid_points),
     }
     out_path = os.path.join(OUTPUT_DIR, f'best_profile_{strategy_id}.json')
-    with open(out_path, 'w') as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2, default=float)
+    with _atomic_writer(out_path, 'w', encoding='utf-8',
+                        produced_by=f"scripts/walk_forward_train:best_profile:{strategy_id}") as _f:
+        json.dump(_sanitize_nan(profile), _f, ensure_ascii=False, indent=2, default=float)
     print(f"  best profile -> {out_path}")
     print(f"    score={best['score']:.4f}  params={best['grid_point']}")
     for wname, wm in best['windows'].items():

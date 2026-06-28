@@ -7,6 +7,16 @@ class BaseTimingStrategy:
     strategy_id = ''
     display_name = ''
     strategy_description = ''
+    registry = 'timing'        # 子类可覆盖为 'us_timing'；为空则跳过注册
+    changelog_meta = None      # 前端展示用 meta（替代 web 层的 *_CHANGELOG_META）
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # 从零依赖模块 strategies.registry 拿注册函数，绕开 strategies/__init__.py：
+        # strategies/__init__ → original_ensemble → timing.strategies → timing.base 形成循环。
+        # strategies.registry 不 import 任何 strategies / timing 子模块，安全。
+        from strategies.registry import _register_strategy
+        _register_strategy(cls)
 
     def __init__(self, initial_capital=50000, buy_cost=0.001, sell_cost=0.001,
                  exposure_mode='binary', enter_threshold=0.55, add_threshold=0.75,
@@ -278,6 +288,12 @@ class BaseTimingStrategy:
             target_exposure = self._build_staged_target_exposure(staged_strength, ready_mask=combined_ready, price_series=price_series)
             # 兜底：再次以 binary 门控覆盖，确保任何路径都不会绕开 binary 清仓信号
             target_exposure = target_exposure.where(binary_gate, 0.0)
+            # Invariant：staged 模式 binary=0 时所有 strength_bucket 必须为 0
+            _gate_violation = (~binary_gate) & (target_exposure.fillna(0.0).abs() > 1e-9)
+            assert not _gate_violation.any(), (
+                f"staged 模式 binary_position=0 但 target_exposure!=0: "
+                f"violating_idx={target_exposure.index[_gate_violation].tolist()[:5]}"
+            )
         else:
             target_exposure = binary_position.astype(float)
 

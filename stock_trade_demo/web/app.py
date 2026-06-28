@@ -23,6 +23,7 @@ from web import state
 from web.blueprints import (
     pages, select_api, timing_api, us_timing_api,
     live_api, data_admin_api, factor_explore_api, commodity_api,
+    hk_timing_api,
 )
 
 
@@ -73,6 +74,7 @@ def create_app() -> Flask:
     app.register_blueprint(data_admin_api.bp)
     app.register_blueprint(factor_explore_api.bp)
     app.register_blueprint(commodity_api.bp)
+    app.register_blueprint(hk_timing_api.bp)
 
     return app
 

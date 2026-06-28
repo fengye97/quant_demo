@@ -29,3 +29,8 @@ def page_live():
 @bp.route('/commodity')
 def commodity_page():
     return render_template('commodity.html')
+
+
+@bp.route('/hk_timing')
+def hk_timing_page():
+    return render_template('hk_timing.html')

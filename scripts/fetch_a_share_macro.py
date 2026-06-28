@@ -26,6 +26,9 @@ from typing import Optional
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT_SCRIPTS = os.path.dirname(_HERE)
+sys.path.insert(0, os.path.join(_REPO_ROOT_SCRIPTS, 'stock_trade_demo'))
+from utils.atomic_io import atomic_write_csv as _atomic_write_csv
 _REPO_ROOT = os.path.dirname(_HERE)
 _OUT_DIR = os.path.join(_REPO_ROOT, 'data', 'a_share_macro')
 os.makedirs(_OUT_DIR, exist_ok=True)
@@ -57,7 +60,8 @@ def _upsert(path: str, new_rows: pd.DataFrame) -> int:
         combined = new_rows
     combined['date'] = pd.to_datetime(combined['date'])
     combined = combined.sort_values('date').drop_duplicates('date', keep='last')
-    combined.to_csv(path, index=False)
+    _atomic_write_csv(path, combined, index=False,
+                      produced_by=f"scripts/fetch_a_share_macro:{os.path.basename(path)}")
     return len(new_rows)
 
 

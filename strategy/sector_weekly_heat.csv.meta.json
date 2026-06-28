@@ -1,0 +1,7 @@
+{
+  "produced_by": "scripts/compute_sector_weekly_heat",
+  "row_count_if_df": 28245,
+  "sha256_first_8k": "928226222d86cebced517711d34224b2",
+  "written_at_iso": "2026-06-16T15:43:17.672304+00:00",
+  "written_at_unix": 1781624597.6723042
+}

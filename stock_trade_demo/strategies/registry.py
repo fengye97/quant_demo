@@ -21,12 +21,14 @@ STRATEGY_REGISTRY = {}      # key: strategy_id -> class（registry='select'）
 TIMING_REGISTRY = {}        # key: strategy_id -> class（registry='timing'，A 股择时）
 US_TIMING_REGISTRY = {}     # key: strategy_id -> class（registry='us_timing'，美股择时）
 COMMODITY_REGISTRY = {}     # key: strategy_id -> class（registry='commodity'，大宗商品择时）
+HK_TIMING_REGISTRY = {}     # key: strategy_id -> class（registry='hk_timing'，港股择时）
 
 _REGISTRY_MAP = {
     'select': STRATEGY_REGISTRY,
     'timing': TIMING_REGISTRY,
     'us_timing': US_TIMING_REGISTRY,
     'commodity': COMMODITY_REGISTRY,
+    'hk_timing': HK_TIMING_REGISTRY,
 }
 
 

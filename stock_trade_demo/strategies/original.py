@@ -35,19 +35,24 @@ class OriginalStrategy(BaseStrategy):
     strategy_description = '行业估值 + bias反转 + 小市值，主排序因子是原始总市值。'
 
     def __init__(self, val_pct_cutoff=0.68, bias_pct=0.52,
-                 vol_pct=0.78, val_history_periods=12, **kwargs):
+                 vol_pct=0.78, val_history_periods=12,
+                 max_monthly_decline=-0.25, **kwargs):
         """
         参数:
-          val_pct_cutoff     — 行业估值分位阈值，低于此值的行业保留
-          bias_pct           — bias_20 截断分位数
-          vol_pct            — 成交额波动截断分位数
-          val_history_periods — 行业估值分位所需的最少历史期数
+          val_pct_cutoff       — 行业估值分位阈值，低于此值的行业保留
+          bias_pct             — bias_20 截断分位数
+          vol_pct              — 成交额波动截断分位数
+          val_history_periods  — 行业估值分位所需的最少历史期数
+          max_monthly_decline  — 月度跌幅硬性下限：超过此值（如 -0.25 = -25%）的个股直接剔除。
+                                 用于排除连续跌停/极端崩跌后面临停牌风险的票。
+                                 默认 -0.25（约每月 0.4% 的极端尾部）。
         """
         super().__init__(**kwargs)
         self.val_pct_cutoff = val_pct_cutoff
         self.bias_pct = bias_pct
         self.vol_pct = vol_pct
         self.val_history_periods = int(val_history_periods)
+        self.max_monthly_decline = float(max_monthly_decline)
         self.require_positive_pe = True
         self.require_positive_net_assets = True
         self.require_positive_profit = True
@@ -66,6 +71,11 @@ class OriginalStrategy(BaseStrategy):
              'description': '剔除成交额标准差超过此分位的股票。',
              'default': self.vol_pct, 'min': 0.3, 'max': 1.0, 'step': 0.01,
              'unit': '', 'type': 'filter'},
+            {'key': 'max_monthly_decline', 'label': '月度极端跌幅下限',
+             'description': '当月涨跌幅低于此值的股票直接剔除。用于排除连续跌停/极端崩跌面临停牌风险的股票。'
+                            '约每月仅排除 0.4% 的极端尾部。-0.25 = -25%。',
+             'default': self.max_monthly_decline, 'min': -0.50, 'max': -0.10, 'step': 0.01,
+             'unit': '', 'type': 'filter'},
         ]
 
     def get_filter_descriptions(self):
@@ -73,6 +83,9 @@ class OriginalStrategy(BaseStrategy):
             {'name': '行业估值过滤', 'description': '剔除估值分位高于阈值的行业，避免在高估行业里做小市值暴露。'},
             {'name': 'bias_20 过滤', 'description': '剔除短期偏离20日均线过大的股票，降低追高回撤风险。'},
             {'name': '成交额波动过滤', 'description': '剔除成交额异常波动的股票，过滤交易行为不稳定标的。'},
+            {'name': '月度极端跌幅过滤',
+             'description': f'剔除当月涨跌幅低于 {self.max_monthly_decline*100:.0f}% 的股票，'
+                            '排除连续跌停 / 基本面崩塌后面临停牌风险的极端尾部。'},
         ]
 
     def get_factor_overview_tags(self):
@@ -208,6 +221,12 @@ class OriginalStrategy(BaseStrategy):
             lambda x: x.quantile(self.vol_pct)
         )
         df = df[df['成交额std_10'] < vol_cutoff]
+
+        # Step 4: 月度极端跌幅过滤
+        # 当月涨跌幅低于下限 = 连续跌停或基本面崩塌，次月大概率停牌或继续崩跌
+        # 约仅排除每月 0.4% 的极端尾部（以 -25% 为例）
+        if '涨跌幅' in df.columns:
+            df = df[df['涨跌幅'] >= self.max_monthly_decline]
 
         return df
 

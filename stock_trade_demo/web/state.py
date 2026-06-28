@@ -53,18 +53,20 @@ from strategies.base import (
     TIMING_REGISTRY,
     US_TIMING_REGISTRY,
 )
-from strategies.registry import COMMODITY_REGISTRY
+from strategies.registry import COMMODITY_REGISTRY, HK_TIMING_REGISTRY
 from backtest import load_data, select_and_backtest, strategy_evaluate, compute_alpha_beta
 from index_data import (
     INDEX_CONFIGS, TIMING_ETF_CONFIGS, A_SHARE_INDEX_IDS,
     get_index_daily, get_timing_etf_daily, get_a_share_trading_calendar,
     get_index_returns, build_index_panel, build_us_index_panel, build_commodity_index_panel,
+    build_hk_index_panel,
     build_period_lookup, get_index_return_for_date, refresh_all_timing_etf_daily,
 )
 # 触发 timing 策略类注册（NasdaqTimingStrategy 设了 registry=None，会自动跳过）
 from timing import (  # noqa: F401
     CSI1000TimingStrategy, Star50TimingStrategy, ChiNextTimingStrategy,
     SP500TimingStrategy, MacroV32TimingStrategy, GoldTimingStrategy,
+    HSITimingStrategy, HSTechTimingStrategy,
     run_timing_backtest, evaluate_timing_result, timing_result_to_json,
     filter_timing_result, summarize_timing_windows,
 )
@@ -119,6 +121,8 @@ US_TIMING_PANEL = None
 US_TIMING_CACHE = {}                 # key: strategy_name -> result_df
 COMMODITY_PANEL = None
 COMMODITY_CACHE = {}                 # key: strategy_name -> result_df
+HK_PANEL = None
+HK_CACHE = {}                        # key: strategy_name -> result_df
 _PROFILE_SUMMARY_CACHE = {}          # key: strategy_name -> profile_summary list
 FACTOR_BACKTEST_CACHE = {}           # key: "top_k=N" -> factor backtest payload
 CSI1000_SIGNAL_SERIES = None         # CSI1000 择时策略日线仓位信号
@@ -233,6 +237,7 @@ STRATEGY_MAP = STRATEGY_REGISTRY
 TIMING_STRATEGY_MAP = TIMING_REGISTRY
 US_TIMING_STRATEGY_MAP = US_TIMING_REGISTRY
 COMMODITY_STRATEGY_MAP = COMMODITY_REGISTRY
+HK_STRATEGY_MAP = HK_TIMING_REGISTRY
 
 US_TIMING_PAGE_STRATEGY_IDS = [
     'macro_v32_timing',
@@ -484,6 +489,40 @@ def init_commodity_cache():
             print(f"[init] {sid} 大宗商品择时完成, 累积净值: {nav:.2f}")
         except Exception as e:
             print(f"[init] {sid} 大宗商品择时失败: {e}")
+
+
+def ensure_hk_panel_loaded(force_reload=False):
+    global HK_PANEL
+    if HK_PANEL is not None and not force_reload:
+        return
+    try:
+        HK_PANEL = build_hk_index_panel()
+        print(f"[init] 港股ETF面板加载完成: {len(HK_PANEL)} 行")
+    except Exception as e:
+        print(f"[WARN] 无法加载港股ETF面板: {e}")
+        HK_PANEL = None
+        raise
+
+
+def init_hk_cache():
+    global HK_CACHE
+    if not HK_STRATEGY_MAP:
+        return
+    ensure_hk_panel_loaded()
+    if HK_PANEL is None or len(HK_PANEL) == 0:
+        return
+    for sid, cls in HK_STRATEGY_MAP.items():
+        if sid in HK_CACHE:
+            continue
+        try:
+            strategy = cls()
+            signal_df = strategy.run(HK_PANEL.copy())
+            result = run_timing_backtest(signal_df, strategy, benchmark_returns=INDEX_RETURNS_MAP.get(strategy.get_index_id()))
+            HK_CACHE[sid] = result
+            nav = float(result['累积净值'].iloc[-1]) if len(result) else float('nan')
+            print(f"[init] {sid} 港股择时完成, 累积净值: {nav:.2f}")
+        except Exception as e:
+            print(f"[init] {sid} 港股择时失败: {e}")
 
 
 def build_us_timing_strategy(strategy_name='macro_v32_timing', **params):
@@ -754,6 +793,32 @@ def build_commodity_strategy(strategy_name='gold_timing', **params):
             v = min(max(float(v or 0.0), 0.0), 1.0)
         else:
             v = float(v)
+        setattr(instance, k, v)
+    return instance
+
+
+def build_hk_strategy(strategy_name='hsi_timing', **params):
+    strat_cls = HK_STRATEGY_MAP.get(strategy_name)
+    if strat_cls is None:
+        raise ValueError(f'未知港股策略: {strategy_name}')
+    sig = inspect.signature(strat_cls.__init__)
+    init_keys = set(sig.parameters.keys())
+    merged_params = {}
+    best_profile = _load_best_profile(strategy_name)
+    if best_profile is not None:
+        merged_params.update(best_profile.get('all_params', {}))
+    merged_params.update({k: v for k, v in params.items() if v is not None})
+    init_params = {k: v for k, v in merged_params.items()
+                   if k in init_keys and k != 'self' and v is not None}
+    deferred_params = {k: v for k, v in merged_params.items()
+                       if k in _REALISM_ALL_KEYS and k not in init_keys and v is not None}
+    instance = strat_cls(**init_params)
+    for k, v in deferred_params.items():
+        if k == 'profit_lock_enabled': v = bool(v)
+        elif k == 'limit_max_delay_days': v = max(int(v or 0), 0)
+        elif k in {'slippage_bps', 'cash_interest_rate', 'commission_rate', 'commission_min', 'stamp_tax_rate', 'transfer_fee_rate', 'profit_lock_drawdown'}: v = max(float(v or 0.0), 0.0)
+        elif k == 'base_floor': v = min(max(float(v or 0.0), 0.0), 1.0)
+        else: v = float(v)
         setattr(instance, k, v)
     return instance
 
@@ -1338,7 +1403,9 @@ def _compute_current_signal_core(strategy_id, strategy, result_df):
     # 真正的“当前信号”来自 TIMING_PANEL / US_TIMING_PANEL / COMMODITY_PANEL 最新行跑 strategy.run()，
     # 不依赖 T+1 结算价；但参考价格与净值仍保留最近已结算口径。
     try:
-        if strategy_id in COMMODITY_STRATEGY_MAP:
+        if strategy_id in HK_STRATEGY_MAP:
+            panel = HK_PANEL
+        elif strategy_id in COMMODITY_STRATEGY_MAP:
             panel = COMMODITY_PANEL
         elif strategy_id in TIMING_STRATEGY_MAP:
             panel = TIMING_PANEL
@@ -1369,6 +1436,19 @@ def _compute_current_signal_core(strategy_id, strategy, result_df):
     exposure_delta = round(target - prev_exp, 4)
     settled_nav = round(float(latest_settled.get('累积净值', 1.0)), 4) if pd.notna(latest_settled.get('累积净值', None)) else None
     current_position = int(target > 1e-8)
+    # data_stale_warning：信号日（as_of，来自新鲜指数面板）与已结算日（settled_as_of，
+    # 依赖 T+1 ETF 价）正常相差 ≤1 天。相差 >2 天说明 ETF/结算价长期未刷新（如 qfq 停在
+    # 数周前），此时 nav/ref_close 等标记并非最新，必须显式提示，避免交易员把陈旧 P&L 当今日。
+    data_stale_warning = None
+    try:
+        _gap_days = (pd.Timestamp(as_of_date_str) - pd.Timestamp(settled_as_of_date_str)).days
+        if _gap_days > 2:
+            data_stale_warning = (
+                f'ETF/结算数据滞后于信号日 {_gap_days} 天（信号日 {as_of_date_str}，'
+                f'已结算日 {settled_as_of_date_str}），P&L 标记可能非最新，请刷新指数/ETF 数据。'
+            )
+    except Exception:
+        data_stale_warning = None
     return {
         'strategy_id': strategy_id,
         'name': strategy.get_display_name() if strategy else strategy_id,
@@ -1377,6 +1457,7 @@ def _compute_current_signal_core(strategy_id, strategy, result_df):
         'etf_name': etf_name,
         'as_of_date': as_of_date_str,
         'settled_as_of_date': settled_as_of_date_str,
+        'data_stale_warning': data_stale_warning,
         'target_exposure': round(target, 4),
         'prev_exposure': round(prev_exp, 4),
         'exposure_delta': exposure_delta,
@@ -1484,11 +1565,26 @@ def _check_a_share_index_etf_alignment():
         etf_max = pd.to_datetime(etf_df['date']).max() if etf_df is not None and len(etf_df) > 0 else None
         if idx_max is None or etf_max is None:
             continue
+        # 指数是 A 股交易日历真值源。
+        # - idx_max < etf_max：指数被旧数据污染（危险，CLAUDE.md 明确必须报）。
+        # - etf_max < idx_max 且滞后 > STALE_TOLERANCE_DAYS：ETF 长期未刷新（典型场景：
+        #   非 qfq 已更新但 qfq 停留数周），会让择时信号/结算价停在旧日期，必须报告；
+        #   同日/次日的 1 天小滞后属正常刷新节奏，不报，避免误报。
+        STALE_TOLERANCE_DAYS = 2
         if idx_max < etf_max:
             mismatches.append({
                 'index_id': index_id,
+                'direction': 'index_behind',
                 'index_max_date': idx_max.strftime('%Y-%m-%d'),
                 'etf_max_date': etf_max.strftime('%Y-%m-%d'),
+            })
+        elif (idx_max - etf_max).days > STALE_TOLERANCE_DAYS:
+            mismatches.append({
+                'index_id': index_id,
+                'direction': 'etf_behind',
+                'index_max_date': idx_max.strftime('%Y-%m-%d'),
+                'etf_max_date': etf_max.strftime('%Y-%m-%d'),
+                'lag_days': (idx_max - etf_max).days,
             })
     return mismatches
 

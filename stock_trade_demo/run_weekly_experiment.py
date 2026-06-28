@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 输出已归档至 .cache/archive/，重跑可重生成
 import argparse
 import json
 import math

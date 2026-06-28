@@ -30,6 +30,57 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
+# Make `stock_trade_demo/utils/atomic_io.py` importable when this script is
+# launched from the repo root. atomic_io provides crash-safe write helpers
+# (tmp + fsync + os.replace) for every pkl/csv this script lays down — without
+# them, a Ctrl-C between flush() and rename can leave half-written cache or
+# half-written stock_data.csv on disk.
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_STD_PATH = os.path.join(_REPO_ROOT, "stock_trade_demo")
+if _STD_PATH not in sys.path:
+    sys.path.insert(0, _STD_PATH)
+from utils import atomic_io  # noqa: E402
+from schemas.stock_panel import STOCK_DATA_SCHEMA  # noqa: E402
+
+
+def _validate_new_rows_or_die(new_rows, *, headers, source: str) -> None:
+    """Pillar 2 Step 5 慢热：把 new_rows（list[list[str]]）转成 DataFrame，
+    用 STOCK_DATA_SCHEMA 校验关键列。任何 SchemaError 都硬失败，
+    绝不让脏行落进 stock_data.csv（CLAUDE.md 红线 4：列序 + GBK 不能动）。
+
+    这里只校验 new_rows 这一截（≈3000-5000 行 / 月），不读全表。
+    """
+    if not new_rows:
+        return
+    import pandas as _pd_local
+    import pandera as _pa_local
+
+    df = _pd_local.DataFrame(new_rows, columns=headers)
+    # 价格/数值列先转 numeric（CSV row 是 str），让 schema 的 coerce 能生效
+    numeric_cols = [
+        "开盘价", "最高价", "最低价", "收盘价", "VWAP", "成交额",
+        "bias_5", "bias_10", "bias_20",
+        "振幅_5", "振幅_10", "振幅_20",
+        "涨跌幅std_5", "涨跌幅std_10", "涨跌幅std_20",
+        "成交额std_5", "成交额std_10", "成交额std_20",
+        "K", "D", "J", "DIF", "DEA", "MACD",
+        "市盈率倒数", "市净率倒数",
+    ]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = _pd_local.to_numeric(df[c], errors='coerce')
+    try:
+        STOCK_DATA_SCHEMA.validate(df, lazy=True)
+    except (_pa_local.errors.SchemaError, _pa_local.errors.SchemaErrors) as e:
+        print(
+            f"\n[get_stock_info] FATAL: new_rows from {source} failed STOCK_DATA_SCHEMA;\n"
+            f"  拒绝写入 stock_data.csv 避免污染历史月度面板。\n"
+            f"  详情: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
@@ -1010,8 +1061,8 @@ def supplement_csv(
         daily_data = fetch_daily_batch(stocks_to_update, datalen=datalen)
         print(f"  Successfully fetched {len(daily_data)} stocks", file=sys.stderr)
         if daily_cache_file:
-            with open(daily_cache_file, "wb") as f:
-                _pickle.dump(daily_data, f)
+            atomic_io.atomic_write_pickle(daily_cache_file, daily_data,
+                                         produced_by="get_stock_info.supplement:daily_cache")
             print(f"  Saved daily data cache to {daily_cache_file}", file=sys.stderr)
 
     # ── Step 2: Fetch real-time quotes for market cap, PE, PB ──
@@ -1026,8 +1077,8 @@ def supplement_csv(
         rt_quotes = fetch_realtime_quotes_batch(stocks_to_update)
         print(f"  Successfully fetched {len(rt_quotes)} real-time quotes", file=sys.stderr)
         if rt_cache_file:
-            with open(rt_cache_file, "wb") as f:
-                _pickle.dump(rt_quotes, f)
+            atomic_io.atomic_write_pickle(rt_cache_file, rt_quotes,
+                                         produced_by="get_stock_info.supplement:rt_quotes_cache")
             print(f"  Saved real-time quotes cache to {rt_cache_file}", file=sys.stderr)
 
     # ── Step 3: Build new rows ──
@@ -1206,6 +1257,10 @@ def supplement_csv(
         print("  No new rows to append. Data may already be up to date.", file=sys.stderr)
         return 0
 
+    # Pillar 2 Step 5 慢热：写入前先校验 new_rows，schema 失败直接 raise，
+    # stock_data.csv 仍然是上一轮的完整版本（atomic_writer 还没开）。
+    _validate_new_rows_or_die(new_rows, headers=CSV_HEADERS, source="supplement_v1")
+
     # ── Step 4: Update previous month's 下周期每天涨跌幅 in memory ──
     # (already done above by mutating stock_data[code][-1][54])
 
@@ -1223,13 +1278,13 @@ def supplement_csv(
             if last_row[0].startswith(prev_month_str) and last_row[54] != "[]":
                 backfill_map[(code, last_row[0])] = last_row[54]
 
-    # Stream existing file → temp file applying backfill, then append new rows.
-    # Writing to a temp file first makes the operation atomic: if the process is
-    # interrupted mid-write the original CSV is untouched; the temp is abandoned.
-    tmp_path = csv_path + ".tmp"
+    # Stream existing file → atomic tmp file applying backfill, then append new
+    # rows. atomic_writer adds fsync(tmp) before the rename so a power loss
+    # between flush() and os.replace can't surface a half-written CSV.
     total_written = 0
     with open(csv_path, "r", encoding="gbk") as fin, \
-         open(tmp_path, "w", encoding="gbk", newline="") as fout:
+         atomic_io.atomic_writer(csv_path, mode="w", encoding="gbk", newline="",
+                                produced_by="get_stock_info.supplement:stock_data_csv_upsert") as fout:
         reader = csv.reader(fin)
         writer = csv.writer(fout)
         existing_headers = next(reader)
@@ -1242,9 +1297,6 @@ def supplement_csv(
             total_written += 1
         writer.writerows(new_rows)
         total_written += len(new_rows)
-
-    # Atomic rename: replaces the original only after the write is fully complete.
-    os.replace(tmp_path, csv_path)
 
     print(f"  Done. Total rows now: {total_written}", file=sys.stderr)
     print(f"  Appended {len(new_rows)} new rows for {target_str}", file=sys.stderr)
@@ -1295,18 +1347,16 @@ def _load_daily_cache_one(cache_dir: str, code: str) -> List[Dict[str, object]]:
 
 
 def _save_daily_cache_one(cache_dir: str, code: str, rows: List[Dict[str, object]]) -> None:
-    """Atomically write per-stock daily cache (temp file + os.replace)."""
+    """Atomically write per-stock daily cache (atomic_writer = tmp + fsync + replace)."""
     path = _daily_cache_path(cache_dir, code)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
+    with atomic_io.atomic_writer(path, mode="w", encoding="utf-8", newline="",
+                                 produced_by=f"get_stock_info.per_stock_daily_cache:{code}") as f:
         writer = csv.writer(f)
         writer.writerow(["date", "open", "high", "low", "close", "volume"])
         for r in sorted(rows, key=lambda x: x["date"]):
             writer.writerow([
                 r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"]
             ])
-    os.replace(tmp, path)
 
 
 def _merge_daily(cached: List[Dict[str, object]],
@@ -1570,6 +1620,22 @@ def supplement_csv_incremental(
         prev_year -= 1
     prev_month_str = f"{prev_year}-{prev_month:02d}"
 
+    # Clean up any *.tmp left over from a previously crashed run before we
+    # start writing new ones. Bounded by 1h so an active concurrent writer is
+    # never touched (defensive — this script is single-process anyway).
+    try:
+        swept_root = atomic_io.sweep_dangling_tmps(os.path.dirname(csv_path) or ".")
+        swept_cache = atomic_io.sweep_dangling_tmps(cache_dir, recursive=True)
+        if swept_root or swept_cache:
+            print(
+                f"  Swept {swept_root + swept_cache} stale .tmp file(s) "
+                f"({swept_root} near CSV, {swept_cache} under {cache_dir})",
+                file=sys.stderr, flush=True,
+            )
+    except Exception as _exc:  # don't let cleanup ever block the actual job
+        print(f"  WARN: sweep_dangling_tmps skipped: {_exc!r}",
+              file=sys.stderr, flush=True)
+
     print(f"Reading {csv_path} ...", file=sys.stderr, flush=True)
     _, stock_data = read_csv_data(csv_path)
     print(f"  Found {len(stock_data)} unique stocks", file=sys.stderr, flush=True)
@@ -1608,9 +1674,8 @@ def supplement_csv_incremental(
     else:
         print(f"\nFetching real-time quotes ...", file=sys.stderr, flush=True)
         rt_quotes = fetch_realtime_quotes_batch(eligible)
-        with open(rt_cache_file, "wb") as f:
-            import pickle as _pickle
-            _pickle.dump(rt_quotes, f)
+        atomic_io.atomic_write_pickle(rt_cache_file, rt_quotes,
+                                     produced_by="get_stock_info.supplement_v2:rt_quotes_cache")
         print(f"  Fetched {len(rt_quotes)} real-time quotes", file=sys.stderr, flush=True)
 
     # Step 3: build monthly rows from updated daily cache
@@ -1649,13 +1714,40 @@ def supplement_csv_incremental(
         print("  Nothing to write; CSV unchanged.", file=sys.stderr, flush=True)
         return 0
 
-    # Step 4: upsert into CSV (replace existing target-month rows, append rest)
+    # Pillar 2 Step 5 慢热：写入前先校验 new_rows。
+    _validate_new_rows_or_die(new_rows, headers=CSV_HEADERS, source="supplement_v2")
+
+    # ── col54 backfill coverage sanity check ──
+    # 防 eb4d369 复发：当 stock_data[code][-1] 指向当月行时，原来的 startswith(prev_month)
+    # 永远 False，backfill_prev_col54 silent 为空，上月「下周期每天涨跌幅」永远填不上。
+    expected_backfill_eligible = sum(
+        1 for code in eligible
+        if daily_data.get(code) and stock_data.get(code)
+        and any(r[0].startswith(prev_month_str) for r in stock_data[code])
+    )
+    planned_backfill = len(backfill_prev_col54)
+    if expected_backfill_eligible > 0:
+        plan_ratio = planned_backfill / expected_backfill_eligible
+        print(
+            f"  col54 backfill plan: {planned_backfill}/{expected_backfill_eligible} "
+            f"({plan_ratio:.1%})", file=sys.stderr, flush=True
+        )
+        if plan_ratio < 0.90:
+            raise RuntimeError(
+                f"col54 回填规划覆盖率 {plan_ratio:.1%} "
+                f"({planned_backfill}/{expected_backfill_eligible}) < 90%，"
+                f"疑似 backfill 逻辑失效（参考 eb4d369）。"
+            )
+
+    # Step 4: upsert into CSV (replace existing target-month rows, append rest).
+    # atomic_writer wraps the tmp + fsync + os.replace dance so a crash mid-write
+    # leaves the original stock_data.csv intact (and no dangling tmp sibling).
     print(f"\nUpserting {target_str} rows into CSV ...", file=sys.stderr, flush=True)
     new_keys = {(r[0][:7], r[1]) for r in new_rows}
-    tmp_path = csv_path + ".tmp"
-    kept = replaced = 0
+    kept = replaced = applied_backfill = 0
     with open(csv_path, "r", encoding="gbk") as fin, \
-         open(tmp_path, "w", encoding="gbk", newline="") as fout:
+         atomic_io.atomic_writer(csv_path, mode="w", encoding="gbk", newline="",
+                                produced_by="get_stock_info.supplement_v2:stock_data_csv_upsert") as fout:
         reader = csv.reader(fin)
         writer = csv.writer(fout)
         existing_headers = next(reader)
@@ -1669,11 +1761,23 @@ def supplement_csv_incremental(
             bk_key = (row[1], row[0])
             if bk_key in backfill_prev_col54:
                 row[54] = backfill_prev_col54[bk_key]
+                applied_backfill += 1
             writer.writerow(row)
             kept += 1
         new_rows.sort(key=lambda r: (r[0], r[1]))
         writer.writerows(new_rows)
-    os.replace(tmp_path, csv_path)
+    if planned_backfill > 0:
+        apply_ratio = applied_backfill / planned_backfill
+        print(
+            f"  col54 backfill applied: {applied_backfill}/{planned_backfill} "
+            f"({apply_ratio:.1%})", file=sys.stderr, flush=True
+        )
+        if apply_ratio < 0.90:
+            raise RuntimeError(
+                f"col54 回填落盘覆盖率 {apply_ratio:.1%} "
+                f"({applied_backfill}/{planned_backfill}) < 90%，"
+                f"backfill_prev_col54 与 CSV 行键不匹配。"
+            )
     print(
         f"  Done. Kept {kept}, replaced {replaced}, appended {len(new_rows)} "
         f"(total now {kept + len(new_rows)})",

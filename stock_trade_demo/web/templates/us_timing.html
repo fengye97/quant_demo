@@ -179,6 +179,7 @@
       <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
       <a href="/timing" class="btn btn-secondary" style="text-decoration:none;">A股择时</a>
       <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">美股择时</a>
+      <a href="/hk_timing" class="btn btn-secondary" style="text-decoration:none;">港股择时</a>
       <a href="/commodity" class="btn btn-secondary" style="text-decoration:none;">大宗商品</a>
       <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
       <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
@@ -1031,7 +1032,7 @@
         </div>
         <div class="trade-modal-sub">
           成交价 ${fmtMoney(t.trade_price)} · 成本价 ${fmtMoney(t.cost_price)} · 最新价 ${fmtMoney(t.latest_price)} · 数量 ${fmtQty(t.quantity)} · 成交金额 ${fmtMoney(t.trade_amount)} · 手续费 ${fmtMoney(t.fee_amount)}<br/>
-          ${t.action === 'sell' ? `已实现盈亏 <span class="${valCls(t.realized_pnl)}">${fmtSignedMoney(t.realized_pnl)}</span> · 收益率 <span class="${valCls(t.realized_pnl_pct)}">${fmtPct(t.realized_pnl_pct)}</span>` : `持仓市值 ${fmtMoney(t.holding_value)} · 浮动盈亏 <span class="${valCls(t.unrealized_pnl)}">${fmtSignedMoney(t.unrealized_pnl)}</span>`}
+          ${t.action === 'sell' ? `已实现盈亏 <span class="${valCls(t.realized_pnl)}">${fmtSignedMoney(t.realized_pnl)}</span> · 收益率 <span class="${valCls(t.realized_pnl_pct)}">${fmtPct(t.realized_pnl_pct)}</span>` : `持仓市值 ${fmtMoney(t.holding_value)} · 浮动盈亏 <span class="${valCls(t.unrealized_pnl)}">${fmtSignedMoney(t.unrealized_pnl)}</span>`}${t.blocked_by_limit ? ` · <span style="color:var(--red);font-weight:700;">⚠ 封板</span>` : ''}${t.limit_delays != null && t.limit_delays > 0 ? ` · 顺延 ${t.limit_delays} 天` : ''}
           ${t.holding_days != null ? `<br/>持仓天数 ${t.holding_days} 天` : ''}
         </div>
       </div>

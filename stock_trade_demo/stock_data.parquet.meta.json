@@ -1,0 +1,7 @@
+{
+  "produced_by": "web.state._run_data_update:stock_data_parquet_rebuild",
+  "row_count_if_df": 708399,
+  "sha256_first_8k": "77515bffe37867dc80433bde21060b54",
+  "written_at_iso": "2026-06-27T03:02:11.735310+00:00",
+  "written_at_unix": 1782529331.73531
+}

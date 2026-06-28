@@ -99,6 +99,20 @@ INDEX_CONFIGS = {
         'daily_cache_file': 'gold_daily.csv',
         'series_name': 'gold_return',
     },
+    'hsi': {
+        'name': '恒生ETF',
+        'symbol': 'sz159920',
+        'cache_file': 'hsi_monthly.csv',
+        'daily_cache_file': 'hsi_daily.csv',
+        'series_name': 'hsi_return',
+    },
+    'hstech': {
+        'name': '恒生科技ETF',
+        'symbol': 'sh513180',
+        'cache_file': 'hstech_monthly.csv',
+        'daily_cache_file': 'hstech_daily.csv',
+        'series_name': 'hstech_return',
+    },
 }
 
 # A股指数（不含美股ETF代理，仅用于A股benchmark对比）
@@ -168,6 +182,26 @@ TIMING_ETF_CONFIGS = {
         'daily_cache_file': 'gold_etf_daily.csv',
         'settlement': 'T+1',
         'limit_pct': 0.10,
+        'market': 'SH',
+        'dividend_adjust_method': 'qfq',
+    },
+    'hsi': {
+        'name': '恒生ETF',
+        'code': '159920',
+        'symbol': 'sz159920',
+        'daily_cache_file': 'hsi_etf_daily.csv',
+        'settlement': 'T+0',
+        'limit_pct': None,
+        'market': 'SZ',
+        'dividend_adjust_method': 'qfq',
+    },
+    'hstech': {
+        'name': '恒生科技ETF',
+        'code': '513180',
+        'symbol': 'sh513180',
+        'daily_cache_file': 'hstech_etf_daily.csv',
+        'settlement': 'T+0',
+        'limit_pct': None,
         'market': 'SH',
         'dividend_adjust_method': 'qfq',
     },
@@ -752,6 +786,14 @@ def build_us_index_panel(force_refetch=False):
 def build_commodity_index_panel(force_refetch=False):
     """Build a daily wide panel for commodity ETFs (gold, etc.)."""
     return build_index_panel(index_ids=list(COMMODITY_INDEX_IDS), force_refetch=force_refetch)
+
+
+HK_INDEX_IDS = {'hsi', 'hstech'}
+
+
+def build_hk_index_panel(force_refetch=False):
+    """Build a daily wide panel for HK ETFs (HSI, HSTech)."""
+    return build_index_panel(index_ids=list(HK_INDEX_IDS), force_refetch=force_refetch)
 
 
 # ═══════════════════════════════════════════════════════════════════

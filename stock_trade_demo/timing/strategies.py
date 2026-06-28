@@ -1165,3 +1165,191 @@ class GoldTimingStrategy(BaseTimingStrategy):
             reason = '黄金位于趋势线下方，等待重新站上趋势线再入场。'
             detail = f'close={close_val:.2f}, trend_ma={trend_ma:.2f}'
         return reason, detail
+
+
+class HSITimingStrategy(BaseTimingStrategy):
+    strategy_id = 'hsi_timing'
+    registry = 'hk_timing'
+    display_name = '恒生指数择时策略'
+    strategy_description = '基于趋势均线 + 突破确认 + MACD 辅助，判断恒生指数的买卖时机。恒生指数涵盖港股蓝筹，受中国基本面+全球流动性双重驱动。'
+
+    def __init__(self, trend_window=50, breakout_window=20, exit_window=10,
+                 macd_fast=12, macd_slow=26, macd_signal=9, **params):
+        self.trend_window = int(trend_window)
+        self.breakout_window = int(breakout_window)
+        self.exit_window = int(exit_window)
+        self.macd_fast = int(macd_fast)
+        self.macd_slow = int(macd_slow)
+        self.macd_signal = int(macd_signal)
+        super().__init__(**params)
+
+    def get_index_id(self):
+        return 'hsi'
+
+    def get_index_name(self):
+        return '恒生指数'
+
+    def get_parameter_definitions(self):
+        return [
+            {'key': 'trend_window', 'label': '趋势均线', 'type': 'timing', 'min': 20, 'max': 120, 'step': 1, 'default': self.trend_window, 'unit': '日'},
+            {'key': 'breakout_window', 'label': '突破窗口', 'type': 'timing', 'min': 5, 'max': 60, 'step': 1, 'default': self.breakout_window, 'unit': '日'},
+            {'key': 'exit_window', 'label': '退出窗口', 'type': 'timing', 'min': 3, 'max': 30, 'step': 1, 'default': self.exit_window, 'unit': '日'},
+        ]
+
+    def get_principle_summary(self):
+        return '恒生指数先看价格站上趋势线并突破近期高点，MACD 金叉辅助确认入场；跌破退出位或趋势线时离场。'
+
+    def get_formula_blocks(self):
+        return [
+            {'title': '趋势确认', 'expression': 'trend_ok_t = (close_t > trendMA_t)'},
+            {'title': '突破入场', 'expression': 'buy_t = (close_t > breakoutHigh_t) ∧ (close_t > trendMA_t)'},
+            {'title': 'MACD 辅助', 'expression': 'macd_t = (MACD_t > Signal_t) ∧ (MACD_{t-1} ≤ Signal_{t-1})'},
+            {'title': '退出条件', 'expression': 'sell_t = (close_t < exitLow_t) ∨ (close_t < trendMA_t)'},
+        ]
+
+    def compute_indicators(self, df):
+        close_col = f'{self.get_index_id()}_close'
+        high_col = f'{self.get_index_id()}_high'
+        low_col = f'{self.get_index_id()}_low'
+        if close_col not in df.columns:
+            df[close_col] = df['close'] if 'close' in df.columns else 0.0
+        df['close'] = df[close_col]
+        df['high'] = df[high_col] if high_col in df.columns else df['close']
+        df['low'] = df[low_col] if low_col in df.columns else df['close']
+        close = df['close'].astype(float)
+        df['trend_ma'] = close.rolling(window=self.trend_window, min_periods=1).mean()
+        df['breakout_high'] = close.rolling(window=self.breakout_window, min_periods=1).max()
+        df['exit_low'] = close.rolling(window=self.exit_window, min_periods=1).min()
+        macd_line, signal_line = _calc_macd(close, self.macd_fast, self.macd_slow, self.macd_signal)
+        df['macd_line'] = macd_line
+        df['macd_signal'] = signal_line
+        df['macd_hist'] = macd_line - signal_line
+        return df
+
+    def generate_signals(self, df):
+        df = df.copy()
+        close = df['close']
+        buy_breakout = (close > df['breakout_high']) & (close > df['trend_ma'])
+        macd_cross = ((df['macd_line'] > df['macd_signal']) & (df['macd_line'].shift(1) <= df['macd_signal'].shift(1)) & (close > df['trend_ma']))
+        buy_cond = buy_breakout | macd_cross
+        sell_cond = (close < df['exit_low']) | (close < df['trend_ma'])
+        pos = np.zeros(len(df), dtype=int); cur = 0
+        for i in range(len(df)):
+            bc = bool(buy_cond.iloc[i]) if pd.notna(buy_cond.iloc[i]) else False
+            sc = bool(sell_cond.iloc[i]) if pd.notna(sell_cond.iloc[i]) else False
+            if cur == 0 and bc: cur = 1
+            elif cur == 1 and sc: cur = 0
+            pos[i] = cur
+        raw_score = (((close / df['breakout_high']) - 1).replace([np.inf, -np.inf], 0).fillna(0) * 10 + ((close / df['trend_ma']) - 1).fillna(0) * 8 + (df['macd_line'] - df['macd_signal']).fillna(0) * 4)
+        df['signal_score'] = raw_score / 3
+        df['strength_score'] = _normalize_score(raw_score)
+        ready_mask = df[['breakout_high', 'exit_low', 'trend_ma', 'macd_line', 'macd_signal']].notna().all(axis=1)
+        df = self._apply_exposure_columns(df, pd.Series(pos, index=df.index), staged_strength=df['strength_score'], ready_mask=ready_mask, price_series=df['close'])
+        df['index_id'] = self.get_index_id()
+        df['index_name'] = self.get_index_name()
+        reasons = df.apply(self.build_signal_reason, axis=1)
+        df['reason_summary'] = reasons.map(lambda x: x[0])
+        df['reason_detail'] = reasons.map(lambda x: x[1])
+        return df
+
+    def build_signal_reason(self, row):
+        target = float(row.get('target_exposure', 0) or 0)
+        close_val = float(row['close']); trend_ma = float(row['trend_ma'])
+        if target >= 0.5: return '恒生指数突破确认站上趋势线，建议持仓。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        elif target > 0: return '恒生指数趋势偏多但强度不足，试探持有。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        elif close_val > trend_ma: return '恒生指数站上趋势线，等待突破确认。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        else: return '恒生指数位于趋势线下方，等待信号。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+
+
+class HSTechTimingStrategy(BaseTimingStrategy):
+    strategy_id = 'hstech_timing'
+    registry = 'hk_timing'
+    display_name = '恒生科技择时策略'
+    strategy_description = '基于趋势均线 + 突破确认 + MACD 辅助，判断恒生科技的买卖时机。恒生科技波动较大，退出条件更紧，适合捕捉科技成长主升浪。'
+
+    def __init__(self, trend_window=50, breakout_window=15, exit_window=8,
+                 macd_fast=12, macd_slow=26, macd_signal=9, **params):
+        self.trend_window = int(trend_window)
+        self.breakout_window = int(breakout_window)
+        self.exit_window = int(exit_window)
+        self.macd_fast = int(macd_fast)
+        self.macd_slow = int(macd_slow)
+        self.macd_signal = int(macd_signal)
+        super().__init__(**params)
+
+    def get_index_id(self):
+        return 'hstech'
+
+    def get_index_name(self):
+        return '恒生科技'
+
+    def get_parameter_definitions(self):
+        return [
+            {'key': 'trend_window', 'label': '趋势均线', 'type': 'timing', 'min': 20, 'max': 120, 'step': 1, 'default': self.trend_window, 'unit': '日'},
+            {'key': 'breakout_window', 'label': '突破窗口', 'type': 'timing', 'min': 5, 'max': 60, 'step': 1, 'default': self.breakout_window, 'unit': '日'},
+            {'key': 'exit_window', 'label': '退出窗口', 'type': 'timing', 'min': 3, 'max': 30, 'step': 1, 'default': self.exit_window, 'unit': '日'},
+        ]
+
+    def get_principle_summary(self):
+        return '恒生科技波动大，退出窗口更短（8日）以快速应对回撤；价格站上趋势线并突破近期高点时入场，跌破退出位或趋势线时立即离场。'
+
+    def get_formula_blocks(self):
+        return [
+            {'title': '趋势确认', 'expression': 'trend_ok_t = (close_t > trendMA_t)'},
+            {'title': '突破入场', 'expression': 'buy_t = (close_t > breakoutHigh_t) ∧ (close_t > trendMA_t)'},
+            {'title': 'MACD 辅助', 'expression': 'macd_t = (MACD_t > Signal_t) ∧ (MACD_{t-1} ≤ Signal_{t-1})'},
+            {'title': '退出条件', 'expression': 'sell_t = (close_t < exitLow_t) ∨ (close_t < trendMA_t)'},
+        ]
+
+    def compute_indicators(self, df):
+        close_col = f'{self.get_index_id()}_close'
+        high_col = f'{self.get_index_id()}_high'
+        low_col = f'{self.get_index_id()}_low'
+        if close_col not in df.columns:
+            df[close_col] = df['close'] if 'close' in df.columns else 0.0
+        df['close'] = df[close_col]
+        df['high'] = df[high_col] if high_col in df.columns else df['close']
+        df['low'] = df[low_col] if low_col in df.columns else df['close']
+        close = df['close'].astype(float)
+        df['trend_ma'] = close.rolling(window=self.trend_window, min_periods=1).mean()
+        df['breakout_high'] = close.rolling(window=self.breakout_window, min_periods=1).max()
+        df['exit_low'] = close.rolling(window=self.exit_window, min_periods=1).min()
+        macd_line, signal_line = _calc_macd(close, self.macd_fast, self.macd_slow, self.macd_signal)
+        df['macd_line'] = macd_line
+        df['macd_signal'] = signal_line
+        df['macd_hist'] = macd_line - signal_line
+        return df
+
+    def generate_signals(self, df):
+        df = df.copy()
+        close = df['close']
+        buy_breakout = (close > df['breakout_high']) & (close > df['trend_ma'])
+        macd_cross = ((df['macd_line'] > df['macd_signal']) & (df['macd_line'].shift(1) <= df['macd_signal'].shift(1)) & (close > df['trend_ma']))
+        buy_cond = buy_breakout | macd_cross
+        sell_cond = (close < df['exit_low']) | (close < df['trend_ma'])
+        pos = np.zeros(len(df), dtype=int); cur = 0
+        for i in range(len(df)):
+            bc = bool(buy_cond.iloc[i]) if pd.notna(buy_cond.iloc[i]) else False
+            sc = bool(sell_cond.iloc[i]) if pd.notna(sell_cond.iloc[i]) else False
+            if cur == 0 and bc: cur = 1
+            elif cur == 1 and sc: cur = 0
+            pos[i] = cur
+        raw_score = (((close / df['breakout_high']) - 1).replace([np.inf, -np.inf], 0).fillna(0) * 10 + ((close / df['trend_ma']) - 1).fillna(0) * 8 + (df['macd_line'] - df['macd_signal']).fillna(0) * 4)
+        df['signal_score'] = raw_score / 3
+        df['strength_score'] = _normalize_score(raw_score)
+        ready_mask = df[['breakout_high', 'exit_low', 'trend_ma', 'macd_line', 'macd_signal']].notna().all(axis=1)
+        df = self._apply_exposure_columns(df, pd.Series(pos, index=df.index), staged_strength=df['strength_score'], ready_mask=ready_mask, price_series=df['close'])
+        df['index_id'] = self.get_index_id()
+        df['index_name'] = self.get_index_name()
+        reasons = df.apply(self.build_signal_reason, axis=1)
+        df['reason_summary'] = reasons.map(lambda x: x[0])
+        df['reason_detail'] = reasons.map(lambda x: x[1])
+        return df
+
+    def build_signal_reason(self, row):
+        target = float(row.get('target_exposure', 0) or 0)
+        close_val = float(row['close']); trend_ma = float(row['trend_ma'])
+        if target >= 0.5: return '恒生科技突破确认站上趋势线，建议持仓。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        elif target > 0: return '恒生科技趋势偏多但强度不足，试探持有。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        elif close_val > trend_ma: return '恒生科技站上趋势线，等待突破确认。', f'close={close_val:.2f} ma={trend_ma:.2f}'
+        else: return '恒生科技位于趋势线下方，等待信号。', f'close={close_val:.2f} ma={trend_ma:.2f}'

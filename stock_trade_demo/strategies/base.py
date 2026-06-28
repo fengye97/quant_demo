@@ -16,6 +16,23 @@ def safe_float(series, default=0.0):
     return pd.to_numeric(series, errors='coerce').fillna(default)
 
 
+# ═════════════════════════════════════════════════════════════════
+# 策略自动注册（Pillar 1 Step 5）— 实际实现住在 strategies/registry.py，
+# 这里 re-export 是为了让历史 import 路径 `from strategies.base import
+# STRATEGY_REGISTRY / _register_strategy` 继续工作。
+# 为什么不直接放本文件？timing/strategies.py 在 class 定义阶段就要触发
+# `_register_strategy`，而通过 `strategies.base` 拿它会走 `strategies/__init__.py`，
+# 与 timing.strategies 形成 import 循环。registry.py 是零依赖模块，可被两端
+# 安全 import。
+# ═════════════════════════════════════════════════════════════════
+from strategies.registry import (  # noqa: E402,F401
+    STRATEGY_REGISTRY,
+    TIMING_REGISTRY,
+    US_TIMING_REGISTRY,
+    _register_strategy,
+)
+
+
 class BaseStrategy:
     """
     选股策略基类。
@@ -41,6 +58,12 @@ class BaseStrategy:
     strategy_id = ''
     display_name = ''
     strategy_description = ''
+    registry = 'select'        # 选股策略默认进 STRATEGY_REGISTRY
+    changelog_meta = None      # 前端展示用 meta（替代 web 层的 *_CHANGELOG_META）
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        _register_strategy(cls)
 
     def __init__(self, select_stock_num=6, c_rate=1.0 / 10000,
                  t_rate=1 / 1000, bull_tp=0.30, bear_tp=0.22,

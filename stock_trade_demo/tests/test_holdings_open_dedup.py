@@ -1,0 +1,133 @@
+"""Regression tests for `web.serializers._build_holdings_payload` open-snapshot dedup.
+
+防的是 acf2ca2：同一持仓被多次以 "open snapshot"（所有 stock.sell_price=None）写入
+回测结果时，UI 会出现重复的未平仓行。修复：dedup + 只保留**最后一笔** open snapshot
+（earlier open snapshot 行直接跳过 `continue`），且只有最后一笔被允许标 is_open=True。
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from web.serializers import _build_holdings_payload, _is_open_snapshot_period
+
+
+def _stock(code, sell_price=None, *, weight=1.0, ret=0.0, buy_price=10.0):
+    return {
+        'code': code,
+        'name': f'name_{code}',
+        'weight': weight,
+        'return': ret,
+        'buy_price': buy_price,
+        'sell_price': sell_price,
+    }
+
+
+def _row(date, stocks, *, capital=100000.0, period_return=0.0):
+    return {
+        '交易日期': pd.Timestamp(date),
+        '买入个股收益': json.dumps(stocks),
+        '当期本金': capital,
+        '当期盈亏': 0.0,
+        '选股下周期涨跌幅': period_return,
+        '买入股票代码': ' '.join(s['code'] for s in stocks),
+        '买入股票名称': ' '.join(s['name'] for s in stocks),
+    }
+
+
+def test_is_open_snapshot_period_logic():
+    """sanity check 配合 dedup 用：只有"全部 sell_price=None"才算 open snapshot。"""
+    assert _is_open_snapshot_period([_stock('A'), _stock('B')]) is True
+    assert _is_open_snapshot_period([_stock('A', sell_price=11), _stock('B')]) is False
+    assert _is_open_snapshot_period([]) is False  # 空列表不算 open snapshot
+
+
+def test_multiple_open_snapshots_dedup_to_last_only():
+    """3 行 open snapshot + 1 行 closed → 输出只剩 1 行 open + 1 行 closed。"""
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('AAA', sell_price=11.0)]),       # closed
+        _row('2025-02-28', [_stock('BBB', sell_price=None)]),       # open #1
+        _row('2025-03-31', [_stock('CCC', sell_price=None)]),       # open #2
+        _row('2025-04-30', [_stock('DDD', sell_price=None)]),       # open #3 (last)
+    ])
+
+    payload = _build_holdings_payload(df, default_capital=100000.0)
+    # 输出反序（newest first），所以 payload[0] 必是最后一行
+    dates = [h['date'] for h in payload]
+    # 2025-02-28 / 2025-03-31 这两行 open snapshot 应被 dedup 掉
+    assert '2025-02-28' not in dates
+    assert '2025-03-31' not in dates
+    # closed 行 + 最后一笔 open 都应保留
+    assert '2025-01-31' in dates
+    assert '2025-04-30' in dates
+    assert len(payload) == 2, f'输出应只有 2 行，实际 {dates}'
+
+    # 验证只有最后一笔 open snapshot 内的 stock 被标记 is_open=True
+    open_row = next(h for h in payload if h['date'] == '2025-04-30')
+    assert len(open_row['stocks']) == 1
+    assert open_row['stocks'][0]['code'] == 'DDD'
+    assert open_row['stocks'][0]['is_open'] is True, '最后一笔 open snapshot 内必须保留 is_open=True'
+
+    closed_row = next(h for h in payload if h['date'] == '2025-01-31')
+    assert closed_row['stocks'][0]['is_open'] is False, 'closed 行内 stock 不能被标 open'
+
+
+def test_single_open_snapshot_preserved():
+    """只有一行 open snapshot 时不要被错误去掉。"""
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('AAA', sell_price=11.0)]),
+        _row('2025-02-28', [_stock('BBB', sell_price=None)]),
+    ])
+    payload = _build_holdings_payload(df, default_capital=100000.0)
+    dates = [h['date'] for h in payload]
+    assert dates == ['2025-02-28', '2025-01-31'], dates
+    open_row = next(h for h in payload if h['date'] == '2025-02-28')
+    assert open_row['stocks'][0]['is_open'] is True
+
+
+def test_closed_rows_with_distinct_dates_not_deduped():
+    """negative case：多笔 closed (各自不同 sell_price) 不能被 open dedup 误伤。"""
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('A', sell_price=11.0)]),
+        _row('2025-02-28', [_stock('B', sell_price=12.0)]),
+        _row('2025-03-31', [_stock('C', sell_price=13.0)]),
+    ])
+    payload = _build_holdings_payload(df, default_capital=100000.0)
+    dates = sorted(h['date'] for h in payload)
+    assert dates == ['2025-01-31', '2025-02-28', '2025-03-31']
+    # 没有任何 open snapshot → 所有 stock 都不应标 is_open
+    for h in payload:
+        for s in h['stocks']:
+            assert s['is_open'] is False
+
+
+def test_no_open_snapshot_returns_no_open_position_flag():
+    """全是 closed 时 last_open_snapshot_idx 仍为 None，allow_open_position 不能误开。"""
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('X', sell_price=10.5), _stock('Y', sell_price=11.5)]),
+    ])
+    payload = _build_holdings_payload(df, default_capital=100000.0)
+    assert len(payload) == 1
+    for s in payload[0]['stocks']:
+        assert s['is_open'] is False
+
+
+def test_mixed_partial_close_not_treated_as_open_snapshot():
+    """部分 sell_price=None 的混合行不属于 open snapshot，不参与 dedup。"""
+    # 行内既有未平仓股，也有已平仓股 → _is_open_snapshot_period 返回 False
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('A', sell_price=11.0), _stock('B', sell_price=None)]),
+        _row('2025-02-28', [_stock('C', sell_price=None), _stock('D', sell_price=None)]),  # full open snapshot
+    ])
+    payload = _build_holdings_payload(df, default_capital=100000.0)
+    dates = sorted(h['date'] for h in payload)
+    # 两行都应保留（前者不算 open snapshot，后者是唯一的 open snapshot）
+    assert dates == ['2025-01-31', '2025-02-28']

@@ -22,6 +22,8 @@ import pandas as pd
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
 _DEMO_ROOT = os.path.join(_REPO_ROOT, 'stock_trade_demo')
+sys.path.insert(0, _DEMO_ROOT)
+from utils.atomic_io import atomic_write_json as _atomic_write_json
 _DATA_DIR = os.path.join(_REPO_ROOT, 'data')
 _DAILY_DIR = os.path.join(_DEMO_ROOT, '.cache')
 _A_SHARE_MACRO_DIR = os.path.join(_DATA_DIR, 'a_share_macro')
@@ -469,10 +471,12 @@ def main():
     snap = compute_factor_snapshot()
     by_strategy = build_strategy_signals(snap)
 
-    # as_of 取所有用到的最新数据中最早的那个，确保对齐
+    # as_of 取所有实际消费到的底层数据中的最早日期，确保文件头时间戳不会比任一子因子“虚新”。
     all_dates = [snap['vix']['date'], snap['ust10y']['date'],
                  snap['yield_curve']['date'], snap['hy_spread']['date']]
     all_dates += [v['date'] for v in snap['indexes'].values()]
+    a_share = snap.get('a_share') or {}
+    all_dates += [a_share.get(k) for k in ('pe_date', 'cn10y_date', 'sse_date', 'margin_date') if a_share.get(k)]
     as_of = min(all_dates)
 
     payload = {
@@ -483,8 +487,8 @@ def main():
     }
 
     os.makedirs(os.path.dirname(_OUTPUT), exist_ok=True)
-    with open(_OUTPUT, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(_OUTPUT, payload, ensure_ascii=False, indent=2,
+                       produced_by="scripts/build_risk_signals")
 
     # stdout 摘要
     print(f"[OK] {_OUTPUT}")
