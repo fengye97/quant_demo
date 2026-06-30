@@ -16,9 +16,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-DATA_DIR = "/Users/fatcat/Desktop/quant/data"
-OUT_DIR  = "/Users/fatcat/Desktop/quant/strategy"
-
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(_REPO_ROOT, "data")
+OUT_DIR  = os.path.join(_REPO_ROOT, "strategy")
 def load(name):
     return pd.read_csv(os.path.join(DATA_DIR, f"fred_{name}.csv"),
                        parse_dates=[0], index_col=0)

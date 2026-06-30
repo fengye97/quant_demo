@@ -6,6 +6,16 @@ stock_data.csv
 缠中说禅笔记.pdf
 预期收益 投资者获利指南(高清).pdf
 
+# 本地缓存（任意层级）— get_stock_info.py / index_data.py / services/cache_store.py
+# 的逐股日线、指数/ETF、web_cache 等本地缓存，以及各种 pickle 中间产物，绝不入 git。
+# （历史上根 .cache/ 因为缺这条规则，泄露了上万个 daily_stocks/*.csv，仓库膨胀到 ~160MB）
+.cache/
+*.pkl
+*.parquet
+
+# 大体量数据样本（训练营/演练用），不入 git
+xingbuxing_stock_data.csv
+
 # 实盘交易记录 — 受 CLAUDE.md 规则 15 保护，永远不提交，永远不被自动化操作覆盖
 data/live_trades.csv
 data/live_trades.csv.tmp

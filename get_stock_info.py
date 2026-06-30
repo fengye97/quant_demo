@@ -1863,7 +1863,15 @@ Examples:
     parser.add_argument(
         "--cache-dir",
         default=".cache",
-        help="Directory for caching fetched data (default: .cache). Set to empty string to disable.",
+        help=(
+            "Directory for caching fetched data (default: .cache). A relative path "
+            "is anchored to the dataset directory (next to --csv, i.e. "
+            "stock_trade_demo/.cache), NOT to the current working directory — this "
+            "keeps the per-stock daily cache in the single canonical location used "
+            "by index_data.py / services/cache_store.py regardless of where the "
+            "script is launched. Pass an absolute path to override, or an empty "
+            "string to disable caching."
+        ),
     )
     parser.add_argument(
         "--datalen",
@@ -1901,6 +1909,15 @@ Examples:
             raise SystemExit(f"ERROR: CSV file not found: {csv_full}")
 
         cache_dir_val = args.cache_dir if args.cache_dir else None
+        # Anchor a relative cache dir to the dataset directory (where csv_full
+        # lives, i.e. stock_trade_demo/), so the per-stock daily cache always
+        # lands in the single canonical stock_trade_demo/.cache used by
+        # index_data.py / services/cache_store.py — never in a cwd-dependent
+        # root .cache/ that escapes .gitignore and leaks into git.
+        if cache_dir_val and not _os.path.isabs(cache_dir_val):
+            cache_dir_val = _os.path.join(
+                _os.path.dirname(_os.path.abspath(csv_full)), cache_dir_val
+            )
 
         if args.legacy:
             count = supplement_csv(
